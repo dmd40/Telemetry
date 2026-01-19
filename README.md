@@ -1,6 +1,7 @@
 --IN EARLY DEVELOPMENT--
 
-In order to run, please run these commands in yuor VSC Terminal 
+TO RUN: 
+Run these commands in your VSC Terminal
 
 pip install -r requirements.txt
 
