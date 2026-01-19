@@ -1,0 +1,315 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+/* Main color pallate*/
+:root {
+  --primary: #4A6491;
+  --secondary: #4A6491;
+  --accent: #7A9CC6;
+  --light: #F0F3F8;
+  --dark: #1C2B3A;
+  --success: #27AE60;
+  --warning: #E67E22;
+  --danger: #E74C3C;
+  --neutral: #95A5A6;
+  --shadow: rgba(42, 63, 84, 0.12);
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+body {
+  background: var(--light);
+  color: var(--dark);
+  font-size: 14px;
+  line-height: 1.5;
+  padding: 0;
+  margin: 0;
+}
+
+h1, h2 {
+  color: var(--dark);
+  margin-bottom: 16px;
+  font-weight: 600;
+}
+
+.nav {
+  background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%);
+  color: white;
+  padding: 14px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  box-shadow: 0 6px 18px var(--shadow);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.nav-left {
+  display: flex;
+  align-items: center;
+}
+
+.nav-right {
+  display: flex;
+  align-items: center;
+}
+
+.nav-dropdown {
+  position: relative;
+  padding-bottom: 10px;
+}
+
+.nav-dropdown-toggle {
+  border: none;
+  background: rgba(255, 255, 255, 0.15);
+  color: white;
+  padding: 10px 14px;
+  border-radius: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  font-size: 1rem;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  transition: background 0.3s ease, transform 0.3s ease;
+}
+
+.nav-dropdown-toggle:hover {
+  background: rgba(255, 255, 255, 0.25);
+  transform: translateY(-1px);
+}
+
+.nav-caret {
+  font-size: 0.8rem;
+  opacity: 0.8;
+}
+
+.nav-dropdown-menu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  min-width: 220px;
+  background: white;
+  border-radius: 12px;
+  box-shadow: 0 12px 30px var(--shadow);
+  padding: 10px;
+  display: none;
+  z-index: 20;
+}
+
+.nav-dropdown-menu.open {
+  display: block;
+}
+
+.nav-dropdown:hover .nav-dropdown-menu {
+  display: block;
+}
+
+.nav-dropdown-menu a,
+.nav-sim-btn {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 10px 12px;
+  border-radius: 8px;
+  color: var(--dark);
+  text-decoration: none;
+  font-weight: 600;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.nav-dropdown-menu a:hover,
+.nav-sim-btn:hover {
+  background: var(--light);
+}
+
+.nav-sim-btn.active {
+  background: rgba(122, 156, 198, 0.2);
+  color: var(--primary);
+}
+
+/* LAAE Image */
+.logo-img {
+  height: 48px;
+  width: auto;
+  display: block;
+}
+
+.page {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+select, button {
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: white;
+  color: var(--dark);
+  box-shadow: 0 2px 10px var(--shadow);
+}
+
+.row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-top: 12px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.panel {
+  background: white;
+  border-radius: 12px;
+  padding: 16px;
+  margin-top: 16px;
+  box-shadow: 0 6px 18px var(--shadow);
+}
+
+.dropdown {
+  position: relative;
+}
+
+.dropdown-menu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 10;
+  min-width: 220px;
+  background: white;
+  border: 1px solid #E0E6ED;
+  border-radius: 10px;
+  padding: 10px;
+  box-shadow: 0 8px 22px rgba(0,0,0,.15);
+  display: none;
+}
+
+.dropdown-menu.open {
+  display: block;
+}
+
+.dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 4px;
+  font-size: 14px;
+  color: var(--dark);
+}
+
+.dropdown-item input {
+  accent-color: var(--accent);
+}
+
+.gauges {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.gauge-card {
+  background: white;
+  border-radius: 12px;
+  padding: 16px;
+  box-shadow: 0 6px 18px var(--shadow);
+  text-align: center;
+  transition: transform 0.25s ease, box-shadow 0.25s ease;
+}
+
+.gauge-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 12px 24px var(--shadow);
+}
+
+.gauge-label {
+  color: var(--neutral);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.gauge-value {
+  font-size: 44px;
+  font-weight: 700;
+  margin: 10px 0;
+  color: var(--dark);
+}
+
+.gauge-unit {
+  color: var(--neutral);
+  font-size: 14px;
+}
+
+.charts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.chart-container {
+  background: white;
+  border-radius: 12px;
+  padding: 18px;
+  box-shadow: 0 6px 18px var(--shadow);
+}
+
+.chart-title {
+  color: var(--dark);
+  font-size: 13px;
+  text-transform: uppercase;
+  margin-bottom: 12px;
+  letter-spacing: 0.08em;
+}
+
+canvas {
+  max-height: 250px;
+}
+
+.gauge-charts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+.gauge-chart-container {
+  background: white;
+  border-radius: 12px;
+  padding: 16px;
+  box-shadow: 0 6px 18px var(--shadow);
+}
+
+.gauge-chart-title {
+  color: var(--dark);
+  font-size: 13px;
+  text-transform: uppercase;
+  margin-bottom: 12px;
+  letter-spacing: 0.08em;
+}
+
+.gauge-wrapper {
+  position: relative;
+  height: 250px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#map {
+  height: 70vh;
+  border-radius: 16px;
+  overflow: hidden;
+  margin-top: 16px;
+  box-shadow: 0 6px 18px var(--shadow);
+}

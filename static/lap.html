@@ -1,0 +1,273 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Lap Performance</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <link rel="stylesheet" href="/static/css/styles.css">
+</head>
+<body>
+  <div class="nav">
+    <div class="nav-left">
+      <div class="nav-dropdown">
+        <button id="navToggle" class="nav-dropdown-toggle">
+          VOID Telemetry <span class="nav-caret">▾</span>
+        </button>
+        <div id="navMenu" class="nav-dropdown-menu">
+          <a href="/static/index.html">Live</a>
+          <a href="/static/lap.html">Lap Plot</a>
+          <a href="/static/gps.html">GPS</a>
+          <button id="simBtn" class="nav-sim-btn">Start Simulation</button>
+        </div>
+      </div>
+    </div>
+    <div class="nav-right">
+      <img src="/static/logo2.png" alt="VOID Telemetry logo" class="logo-img" />
+    </div>
+  </div>
+
+  <div class="page">
+    <h1>Performance Across One Lap</h1>
+
+    <div class="row">
+      <label for="lapSel">Lap:</label>
+      <select id="lapSel"></select>
+      <button id="loadBtn">Load</button>
+      <div class="dropdown">
+        <button id="viewBtn" type="button">View Inputs</button>
+        <div id="viewMenu" class="dropdown-menu" role="menu" aria-label="View Inputs">
+          <label class="dropdown-item"><input type="checkbox" data-series="V" checked /> Voltage</label>
+          <label class="dropdown-item"><input type="checkbox" data-series="A" checked /> Current</label>
+          <label class="dropdown-item"><input type="checkbox" data-series="mph" checked /> Speed</label>
+          <label class="dropdown-item"><input type="checkbox" data-series="torque" checked /> Torque</label>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <canvas id="chart"></canvas>
+    </div>
+  </div>
+
+  <script>
+    let chart;
+    let simulationRunning = false;
+    const viewBtn = document.getElementById("viewBtn");
+    const viewMenu = document.getElementById("viewMenu");
+    const viewChecks = Array.from(viewMenu.querySelectorAll("input[type='checkbox']"));
+    const navToggle = document.getElementById("navToggle");
+    const navMenu = document.getElementById("navMenu");
+    const monthNames = ["Jan.", "Feb.", "Mar.", "Apr.", "May.", "Jun.", "Jul.", "Aug.", "Sep.", "Oct.", "Nov.", "Dec."];
+
+    function formatDateTime(ms) {
+      const date = new Date(Number(ms));
+      if (Number.isNaN(date.getTime())) return "";
+      const month = monthNames[date.getMonth()];
+      const day = String(date.getDate()).padStart(2, "0");
+      const year = date.getFullYear();
+      const hours = String(date.getHours()).padStart(2, "0");
+      const minutes = String(date.getMinutes()).padStart(2, "0");
+      const seconds = String(date.getSeconds()).padStart(2, "0");
+      return `${month} ${day} ${year} ${hours}:${minutes}:${seconds}`;
+    }
+
+    const hoverLinePlugin = {
+      id: "hoverLine",
+      afterDatasetsDraw(chart, args, pluginOptions) {
+        if (chart.config.type !== "line") return;
+        const tooltip = chart.tooltip;
+        if (!tooltip || !tooltip.active || !tooltip.active.length) return;
+
+        const {ctx, chartArea: {top, bottom, left, right}} = chart;
+        const x = tooltip.active[0].element.x;
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.moveTo(x, top);
+        ctx.lineTo(x, bottom);
+        ctx.setLineDash((pluginOptions && pluginOptions.dash) || [4, 4]);
+        ctx.lineWidth = (pluginOptions && pluginOptions.width) || 1;
+        ctx.strokeStyle = (pluginOptions && pluginOptions.color) || "#f8fafc";
+        ctx.stroke();
+        ctx.restore();
+
+        const labelFormatter = pluginOptions && pluginOptions.labelFormatter;
+        const labelText = typeof labelFormatter === "function" ? labelFormatter(tooltip.dataPoints) : "";
+        if (labelText) {
+          const padding = 8;
+          const boxHeight = 24;
+          ctx.save();
+          ctx.font = "12px sans-serif";
+          const textWidth = ctx.measureText(labelText).width;
+          let boxX = x - textWidth / 2 - padding;
+          if (boxX < left) boxX = left;
+          if (boxX + textWidth + padding * 2 > right) boxX = right - textWidth - padding * 2;
+          const boxY = top + 6;
+          ctx.fillStyle = "rgba(15, 23, 42, 0.85)";
+          ctx.strokeStyle = "#475569";
+          ctx.lineWidth = 1;
+          ctx.fillRect(boxX, boxY, textWidth + padding * 2, boxHeight);
+          ctx.strokeRect(boxX, boxY, textWidth + padding * 2, boxHeight);
+          ctx.fillStyle = "#f8fafc";
+          ctx.textBaseline = "middle";
+          ctx.fillText(labelText, boxX + padding, boxY + boxHeight / 2);
+          ctx.restore();
+        }
+      }
+    };
+
+    Chart.register(hoverLinePlugin);
+
+    async function loadLaps() {
+      const res = await fetch("/api/laps");
+      const j = await res.json();
+      const laps = j.laps || [0];
+      const latest = j.latest ?? (laps.length ? laps[laps.length-1] : 0);
+
+      const sel = document.getElementById("lapSel");
+      sel.innerHTML = "";
+      laps.forEach(l => {
+        const opt = document.createElement("option");
+        opt.value = l; opt.textContent = l;
+        if (l === latest) opt.selected = true;
+        sel.appendChild(opt);
+      });
+    }
+
+    async function loadLap(lapId) {
+      const res = await fetch(`/api/lap/${lapId}/timeseries`);
+      const j = await res.json();
+      const data = j.data || [];
+
+      if (!data.length) return;
+
+      const t0 = data[0].t_ms;
+      const maxWindowMs = 15000;
+      const filtered = data.filter(p => (p.t_ms - t0) <= maxWindowMs);
+      if (!filtered.length) return;
+      const labels = filtered.map(p => (p.t_ms - t0)/1000.0); // seconds since lap start
+      const timestamps = filtered.map(p => p.t_ms);
+
+      const volts = filtered.map(p => p.V);
+      const amps  = filtered.map(p => p.A);
+      const mph   = filtered.map(p => p.mph);
+      const torque = filtered.map(p => p.torque);
+
+      const ctx = document.getElementById("chart").getContext("2d");
+      if (chart) chart.destroy();
+
+      chart = new Chart(ctx, {
+        type: "line",
+        data: {
+          labels,
+          datasets: [
+            { label: "Voltage (V)", data: volts, borderColor: "blue", tension: 0.2, pointRadius: 0, seriesKey: "V" },
+            { label: "Current (A)", data: amps,  borderColor: "green", tension: 0.2, pointRadius: 0, seriesKey: "A" },
+            { label: "Speed (mph)", data: mph,   borderColor: "orange", tension: 0.2, pointRadius: 0, seriesKey: "mph" },
+            { label: "Torque (Nm)", data: torque, borderColor: "#ef4444", tension: 0.2, pointRadius: 0, seriesKey: "torque" },
+          ]
+        },
+        options: {
+          responsive: true,
+          animation: false,
+          interaction: { mode: "index", intersect: false },
+          plugins: {
+            tooltip: {
+              mode: "index",
+              intersect: false,
+              callbacks: {
+                title(items) {
+                  if (!items.length) return "";
+                  const idx = items[0].dataIndex;
+                  return formatDateTime(timestamps[idx]);
+                }
+              }
+            },
+            hoverLine: {
+              color: "#000000",
+              labelFormatter(dataPoints) {
+                if (!dataPoints || !dataPoints.length) return "";
+                const idx = dataPoints[0].dataIndex;
+                return formatDateTime(timestamps[idx]);
+              }
+            }
+          },
+          scales: {
+            x: { title: { display: true, text: "Time (s)" } }
+          }
+        }
+      });
+      applySeriesVisibility();
+
+    }
+
+    function applySeriesVisibility() {
+      if (!chart) return;
+      const hiddenByKey = Object.fromEntries(viewChecks.map(c => [c.dataset.series, !c.checked]));
+      chart.data.datasets.forEach((ds) => {
+        if (ds.seriesKey && hiddenByKey.hasOwnProperty(ds.seriesKey)) {
+          ds.hidden = hiddenByKey[ds.seriesKey];
+        }
+      });
+      chart.update();
+    }
+
+    viewBtn.onclick = () => {
+      viewMenu.classList.toggle("open");
+    };
+
+    document.addEventListener("click", (event) => {
+      if (!viewMenu.classList.contains("open")) return;
+      if (viewMenu.contains(event.target) || viewBtn.contains(event.target)) return;
+      viewMenu.classList.remove("open");
+    });
+
+    viewChecks.forEach((checkbox) => {
+      checkbox.addEventListener("change", applySeriesVisibility);
+    });
+
+    navToggle.addEventListener("click", (event) => {
+      event.stopPropagation();
+      navMenu.classList.toggle("open");
+    });
+
+    document.addEventListener("click", (event) => {
+      if (!navMenu.classList.contains("open")) return;
+      if (navMenu.contains(event.target) || navToggle.contains(event.target)) return;
+      navMenu.classList.remove("open");
+    });
+
+    document.getElementById("loadBtn").onclick = async () => {
+      const lapId = Number(document.getElementById("lapSel").value);
+      await loadLap(lapId);
+    };
+
+    const simBtn = document.getElementById("simBtn");
+    
+    async function updateSimulationStatus() {
+      const res = await fetch("/api/simulation/status");
+      const j = await res.json();
+      simulationRunning = j.running;
+      simBtn.textContent = simulationRunning ? "Stop Simulation" : "Start Simulation";
+      simBtn.classList.toggle("active", simulationRunning);
+    }
+
+    simBtn.onclick = async () => {
+      if (simulationRunning) {
+        await fetch("/api/simulation/stop", { method: "POST" });
+      } else {
+        await fetch("/api/simulation/start", { method: "POST" });
+      }
+      await updateSimulationStatus();
+      await loadLaps();
+    };
+
+    (async () => {
+      await updateSimulationStatus();
+      await loadLaps();
+      const lapId = Number(document.getElementById("lapSel").value);
+      await loadLap(lapId);
+    })();
+  </script>
+</body>
+</html>

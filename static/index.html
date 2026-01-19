@@ -1,0 +1,421 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Live Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <link rel="stylesheet" href="/static/css/styles.css">
+</head>
+<body>
+  <div class="nav">
+    <div class="nav-left">
+      <div class="nav-dropdown">
+        <button id="navToggle" class="nav-dropdown-toggle">
+          VOID Telemetry <span class="nav-caret">▾</span>
+        </button>
+        <div id="navMenu" class="nav-dropdown-menu">
+          <a href="/static/index.html">Live</a>
+          <a href="/static/lap.html">Lap Plot</a>
+          <a href="/static/gps.html">GPS</a>
+          <button id="simBtn" class="nav-sim-btn">Start Simulation</button>
+        </div>
+      </div>
+    </div>
+    <div class="nav-right">
+      <img src="/static/logo2.png" alt="VOID Telemetry logo" class="logo-img" />
+    </div>
+  </div>
+
+  <div class="page">
+    <h1>Live Dashboard</h1>
+
+    <div class="gauges">
+    <div class="gauge-card">
+      <div class="gauge-label">Voltage</div>
+      <div class="gauge-value"><span id="V">--</span></div>
+      <div class="gauge-unit">V</div>
+    </div>
+    <div class="gauge-card">
+      <div class="gauge-label">Current</div>
+      <div class="gauge-value"><span id="A">--</span></div>
+      <div class="gauge-unit">A</div>
+    </div>
+    <div class="gauge-card">
+      <div class="gauge-label">Amp Hours</div>
+      <div class="gauge-value"><span id="Ah">--</span></div>
+      <div class="gauge-unit">Ah</div>
+    </div>
+    <div class="gauge-card">
+      <div class="gauge-label">Speed</div>
+      <div class="gauge-value"><span id="mph">--</span></div>
+      <div class="gauge-unit">mph</div>
+    </div>
+    <div class="gauge-card">
+      <div class="gauge-label">Torque</div>
+      <div class="gauge-value"><span id="torque">--</span></div>
+      <div class="gauge-unit">Nm</div>
+    </div>
+  </div>
+
+    <div style="color:var(--neutral); margin-bottom:24px;">Last update: <span id="ts">never</span></div>
+
+    <div class="charts">
+    <div class="chart-container">
+      <div class="chart-title">Voltage & Current</div>
+      <canvas id="chart1"></canvas>
+    </div>
+    <div class="chart-container">
+      <div class="chart-title">Speed</div>
+      <canvas id="chart2"></canvas>
+    </div>
+    <div class="chart-container">
+      <div class="chart-title">Torque</div>
+      <canvas id="chart3"></canvas>
+    </div>
+    <div class="chart-container">
+      <div class="chart-title">Amp Hours</div>
+      <canvas id="chart4"></canvas>
+    </div>
+  </div>
+
+    <h2 style="margin-top:32px; margin-bottom:16px;">Gauge Views</h2>
+    <div class="gauge-charts">
+    <div class="gauge-chart-container">
+      <div class="gauge-chart-title">Voltage Gauge</div>
+      <div class="gauge-wrapper">
+        <canvas id="gaugeV"></canvas>
+      </div>
+    </div>
+    <div class="gauge-chart-container">
+      <div class="gauge-chart-title">Current Gauge</div>
+      <div class="gauge-wrapper">
+        <canvas id="gaugeA"></canvas>
+      </div>
+    </div>
+    <div class="gauge-chart-container">
+      <div class="gauge-chart-title">Speed Gauge</div>
+      <div class="gauge-wrapper">
+        <canvas id="gaugeMph"></canvas>
+      </div>
+    </div>
+    <div class="gauge-chart-container">
+      <div class="gauge-chart-title">Torque Gauge</div>
+      <div class="gauge-wrapper">
+        <canvas id="gaugeTorque"></canvas>
+      </div>
+    </div>
+    </div>
+  </div>
+
+  <script>
+    const ws = new WebSocket(`ws://${location.host}/ws`);
+    let simulationRunning = false;
+    
+    // Data buffers (last 60 seconds at ~10Hz)
+    const maxPoints = 300;
+    const dataBuffer = {
+      timestamps: [],
+      V: [],
+      A: [],
+      mph: [],
+      torque: [],
+      Ah: []
+    };
+
+    let charts = {};
+    let startTime = null;
+
+    const hoverLinePlugin = {
+      id: 'hoverLine',
+      afterDatasetsDraw(chart, args, pluginOptions) {
+        if (chart.config.type !== 'line') return;
+        const tooltip = chart.tooltip;
+        if (!tooltip || !tooltip.active || !tooltip.active.length) return;
+
+        const {ctx, chartArea: {top, bottom, left, right}} = chart;
+        const x = tooltip.active[0].element.x;
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.moveTo(x, top);
+        ctx.lineTo(x, bottom);
+        ctx.lineWidth = (pluginOptions && pluginOptions.width) || 1;
+        const dash = (pluginOptions && pluginOptions.dash) || [4, 4];
+        ctx.setLineDash(dash);
+        ctx.strokeStyle = (pluginOptions && pluginOptions.color) || '#f8fafc';
+        ctx.stroke();
+        ctx.restore();
+
+        const valueCfg = pluginOptions && pluginOptions.valueLabel;
+        if (valueCfg && tooltip.dataPoints.length) {
+          const dpIndex = valueCfg.index ?? 0;
+          const dp = tooltip.dataPoints[dpIndex];
+          if (dp) {
+            const decimals = valueCfg.decimals ?? 1;
+            const prefix = valueCfg.prefix ? valueCfg.prefix + ': ' : '';
+            const suffix = valueCfg.suffix ? ' ' + valueCfg.suffix : '';
+            const text = `${prefix}${Number(dp.parsed.y).toFixed(decimals)}${suffix}`;
+            const padding = 6;
+            const boxHeight = 22;
+            const textWidth = ctx.measureText(text).width;
+            let boxX = x - textWidth / 2 - padding;
+            if (boxX < left) boxX = left;
+            if (boxX + textWidth + padding * 2 > right) boxX = right - textWidth - padding * 2;
+            const boxY = top + 6;
+            ctx.save();
+            ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
+            ctx.strokeStyle = '#475569';
+            ctx.lineWidth = 1;
+            ctx.fillRect(boxX, boxY, textWidth + padding * 2, boxHeight);
+            ctx.strokeRect(boxX, boxY, textWidth + padding * 2, boxHeight);
+            ctx.fillStyle = '#f8fafc';
+            ctx.font = '12px sans-serif';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(text, boxX + padding, boxY + boxHeight / 2);
+            ctx.restore();
+          }
+        }
+      }
+    };
+
+    Chart.register(hoverLinePlugin);
+
+    function initCharts() {
+      // Chart 1: Voltage & Current
+      const ctx1 = document.getElementById('chart1').getContext('2d');
+      if (charts.chart1) charts.chart1.destroy();
+      charts.chart1 = new Chart(ctx1, {
+        type: 'line',
+        data: {
+          labels: [],
+          datasets: [
+            { label: 'Voltage (V)', data: [], borderColor: '#3b82f6', backgroundColor: 'rgba(59, 130, 246, 0.1)', tension: 0.3, fill: true, pointRadius: 2, borderWidth: 2 },
+            { label: 'Current (A)', data: [], borderColor: '#10b981', backgroundColor: 'rgba(16, 185, 129, 0.1)', tension: 0.3, fill: true, pointRadius: 2, borderWidth: 2 }
+          ]
+        },
+        options: { responsive: true, animation: false, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false }, scales: { y: { beginAtZero: true, grid: { color: 'rgba(42, 63, 84, 0.15)' }, ticks: { color: '#2A3F54' } }, x: { grid: { color: 'rgba(42, 63, 84, 0.15)' }, ticks: { color: '#2A3F54' } } }, plugins: { legend: { labels: { color: '#2A3F54' } }, tooltip: { mode: 'index', intersect: false, callbacks: { title(items) { if (!items.length) return ''; const idx = items[0].dataIndex; const t = dataBuffer.timestamps[idx]; return t !== undefined ? `${(t / 1000).toFixed(2)}s` : ''; } } }, hoverLine: { color: '#4A6491' } } }
+      });
+
+      // Chart 2: Speed
+      const ctx2 = document.getElementById('chart2').getContext('2d');
+      if (charts.chart2) charts.chart2.destroy();
+      charts.chart2 = new Chart(ctx2, {
+        type: 'line',
+        data: {
+          labels: [],
+          datasets: [
+            { label: 'Speed (mph)', data: [], borderColor: '#f59e0b', backgroundColor: 'rgba(245, 158, 11, 0.1)', tension: 0.3, fill: true, pointRadius: 2, borderWidth: 2 }
+          ]
+        },
+        options: { responsive: true, animation: false, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false }, scales: { y: { beginAtZero: true, grid: { color: 'rgba(42, 63, 84, 0.15)' }, ticks: { color: '#2A3F54' } }, x: { grid: { color: 'rgba(42, 63, 84, 0.15)' }, ticks: { color: '#2A3F54' } } }, plugins: { legend: { labels: { color: '#2A3F54' } }, tooltip: { mode: 'index', intersect: false, callbacks: { title(items) { if (!items.length) return ''; const idx = items[0].dataIndex; const t = dataBuffer.timestamps[idx]; return t !== undefined ? `${(t / 1000).toFixed(2)}s` : ''; } } }, hoverLine: { color: '#7A9CC6', valueLabel: { prefix: 'Speed', suffix: 'mph', decimals: 1 } } } }
+      });
+
+      // Chart 3: Torque
+      const ctx3 = document.getElementById('chart3').getContext('2d');
+      if (charts.chart3) charts.chart3.destroy();
+      charts.chart3 = new Chart(ctx3, {
+        type: 'line',
+        data: {
+          labels: [],
+          datasets: [
+            { label: 'Torque (Nm)', data: [], borderColor: '#ef4444', backgroundColor: 'rgba(239, 68, 68, 0.1)', tension: 0.3, fill: true, pointRadius: 2, borderWidth: 2 }
+          ]
+        },
+        options: { responsive: true, animation: false, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false }, scales: { y: { beginAtZero: true, grid: { color: 'rgba(42, 63, 84, 0.15)' }, ticks: { color: '#2A3F54' } }, x: { grid: { color: 'rgba(42, 63, 84, 0.15)' }, ticks: { color: '#2A3F54' } } }, plugins: { legend: { labels: { color: '#2A3F54' } }, tooltip: { mode: 'index', intersect: false, callbacks: { title(items) { if (!items.length) return ''; const idx = items[0].dataIndex; const t = dataBuffer.timestamps[idx]; return t !== undefined ? `${(t / 1000).toFixed(2)}s` : ''; } } }, hoverLine: { color: '#4A6491' } } }
+      });
+
+      // Chart 4: Amp Hours
+      const ctx4 = document.getElementById('chart4').getContext('2d');
+      if (charts.chart4) charts.chart4.destroy();
+      charts.chart4 = new Chart(ctx4, {
+        type: 'line',
+        data: {
+          labels: [],
+          datasets: [
+            { label: 'Amp Hours (Ah)', data: [], borderColor: '#8b5cf6', backgroundColor: 'rgba(139, 92, 246, 0.1)', tension: 0.3, fill: true, pointRadius: 2, borderWidth: 2 }
+          ]
+        },
+        options: { responsive: true, animation: false, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false }, scales: { y: { beginAtZero: true, grid: { color: 'rgba(42, 63, 84, 0.15)' }, ticks: { color: '#2A3F54' } }, x: { grid: { color: 'rgba(42, 63, 84, 0.15)' }, ticks: { color: '#2A3F54' } } }, plugins: { legend: { labels: { color: '#2A3F54' } }, tooltip: { mode: 'index', intersect: false, callbacks: { title(items) { if (!items.length) return ''; const idx = items[0].dataIndex; const t = dataBuffer.timestamps[idx]; return t !== undefined ? `${(t / 1000).toFixed(2)}s` : ''; } } }, hoverLine: { color: '#4A6491' } } }
+      });
+
+      // Gauge Charts
+      createGaugeChart('gaugeV', 'Voltage', 60, 0, 60, '#3b82f6');
+      createGaugeChart('gaugeA', 'Current', 120, 0, 120, '#10b981');
+      createGaugeChart('gaugeMph', 'Speed', 50, 0, 50, '#f59e0b');
+      createGaugeChart('gaugeTorque', 'Torque', 200, 0, 200, '#ef4444');
+    }
+
+    function createGaugeChart(canvasId, label, value, min, max, color) {
+      const ctx = document.getElementById(canvasId).getContext('2d');
+      if (charts[canvasId]) charts[canvasId].destroy();
+      
+      charts[canvasId] = new Chart(ctx, {
+        type: 'doughnut',
+        data: {
+          datasets: [{
+            data: [value, max - value],
+            backgroundColor: [color, '#E0E6ED'],
+            borderColor: ['#ffffff', '#ffffff'],
+            borderWidth: 2
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          circumference: 180,
+          rotation: 270,
+          plugins: {
+            legend: { display: false },
+            tooltip: { enabled: false }
+          }
+        },
+        plugins: [{
+          id: 'textCenter',
+          beforeDatasetsDraw(chart) {
+            const {width, height, ctx} = chart;
+            ctx.restore();
+            const fontSize = (height / 160).toFixed(2);
+            ctx.font = `bold ${fontSize}em sans-serif`;
+            ctx.textBaseline = 'middle';
+            ctx.fillStyle = '#1C2B3A';
+            const text = value.toFixed(1);
+            const textX = Math.round((width - ctx.measureText(text).width) / 2);
+            const textY = height / 2 - 10;
+            ctx.fillText(text, textX, textY);
+            
+            ctx.font = `${fontSize * 0.6}em sans-serif`;
+            ctx.fillStyle = '#95A5A6';
+            const unitText = label;
+            const unitX = Math.round((width - ctx.measureText(unitText).width) / 2);
+            ctx.fillText(unitText, unitX, textY + 30);
+            ctx.save();
+          }
+        }]
+      });
+    }
+
+    function updateGaugeCharts() {
+      updateGaugeValue('gaugeV', dataBuffer.V.length ? dataBuffer.V[dataBuffer.V.length - 1] : 0, 60);
+      updateGaugeValue('gaugeA', dataBuffer.A.length ? dataBuffer.A[dataBuffer.A.length - 1] : 0, 120);
+      updateGaugeValue('gaugeMph', dataBuffer.mph.length ? dataBuffer.mph[dataBuffer.mph.length - 1] : 0, 50);
+      updateGaugeValue('gaugeTorque', dataBuffer.torque.length ? dataBuffer.torque[dataBuffer.torque.length - 1] : 0, 200);
+    }
+
+    function updateGaugeValue(chartId, newValue, max) {
+      if (charts[chartId]) {
+        charts[chartId].data.datasets[0].data = [newValue, max - newValue];
+        charts[chartId].update();
+      }
+    }
+
+    function updateCharts() {
+      const labels = dataBuffer.timestamps.map((t, i) => (i % 10 === 0 ? (t / 1000).toFixed(1) + 's' : ''));
+      
+      charts.chart1.data.labels = labels;
+      charts.chart1.data.datasets[0].data = dataBuffer.V;
+      charts.chart1.data.datasets[1].data = dataBuffer.A;
+      charts.chart1.update();
+
+      charts.chart2.data.labels = labels;
+      charts.chart2.data.datasets[0].data = dataBuffer.mph;
+      charts.chart2.update();
+
+      charts.chart3.data.labels = labels;
+      charts.chart3.data.datasets[0].data = dataBuffer.torque;
+      charts.chart3.update();
+
+      charts.chart4.data.labels = labels;
+      charts.chart4.data.datasets[0].data = dataBuffer.Ah;
+      charts.chart4.update();
+    }
+
+    ws.onopen = () => { ws.send("hello"); initCharts(); };
+    
+    ws.onmessage = (evt) => {
+      const s = JSON.parse(evt.data);
+      
+      if (!startTime) startTime = s.t_ms;
+      const elapsedMs = s.t_ms - startTime;
+
+      // Update gauges
+      const set = (id, val, digits=1) => {
+        document.getElementById(id).textContent = (val === null || val === undefined) ? "--" : Number(val).toFixed(digits);
+      };
+      set("V", s.V, 1);
+      set("A", s.A, 1);
+      set("Ah", s.Ah, 2);
+      set("mph", s.mph, 1);
+      set("torque", s.torque, 1);
+      document.getElementById("ts").textContent = new Date().toLocaleTimeString();
+
+      // Update data buffers
+      dataBuffer.timestamps.push(elapsedMs);
+      dataBuffer.V.push(s.V);
+      dataBuffer.A.push(s.A);
+      dataBuffer.mph.push(s.mph);
+      dataBuffer.torque.push(s.torque);
+      dataBuffer.Ah.push(s.Ah);
+
+      if (dataBuffer.timestamps.length > maxPoints) {
+        dataBuffer.timestamps.shift();
+        dataBuffer.V.shift();
+        dataBuffer.A.shift();
+        dataBuffer.mph.shift();
+        dataBuffer.torque.shift();
+        dataBuffer.Ah.shift();
+      }
+
+      updateCharts();
+    };
+
+    const simBtn = document.getElementById("simBtn");
+    const navToggle = document.getElementById("navToggle");
+    const navMenu = document.getElementById("navMenu");
+    
+    async function updateSimulationStatus() {
+      try {
+        const res = await fetch("/api/simulation/status");
+        const j = await res.json();
+        simulationRunning = j.running;
+        simBtn.textContent = simulationRunning ? "Stop Simulation" : "Start Simulation";
+        simBtn.classList.toggle("active", simulationRunning);
+      } catch (e) {
+        console.error("Error checking simulation status:", e);
+      }
+    }
+
+    simBtn.onclick = async () => {
+      try {
+        if (simulationRunning) {
+          await fetch("/api/simulation/stop", { method: "POST" });
+        } else {
+          startTime = null;
+          dataBuffer.timestamps = [];
+          dataBuffer.V = [];
+          dataBuffer.A = [];
+          dataBuffer.mph = [];
+          dataBuffer.torque = [];
+          dataBuffer.Ah = [];
+          await fetch("/api/simulation/start", { method: "POST" });
+        }
+        await updateSimulationStatus();
+      } catch (e) {
+        console.error("Error toggling simulation:", e);
+      } 
+    };
+
+    navToggle.addEventListener("click", (event) => {
+      event.stopPropagation();
+      navMenu.classList.toggle("open");
+    });
+
+    document.addEventListener("click", (event) => {
+      if (!navMenu.classList.contains("open")) return;
+      if (navMenu.contains(event.target) || navToggle.contains(event.target)) return;
+      navMenu.classList.remove("open");
+    });
+
+    updateSimulationStatus();
+  </script>
+</body>
+</html>
