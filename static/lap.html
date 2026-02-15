@@ -30,9 +30,19 @@
     <h1>Performance Across One Lap</h1>
 
     <div class="row">
-      <label for="lapSel">Lap:</label>
-      <select id="lapSel"></select>
-      <button id="loadBtn">Load</button>
+      <label for="lapToggle">Lap:</label>
+      <div class="lap-picker">
+        <button id="lapToggle" class="lap-toggle" type="button">
+          <span id="lapLabel">--</span>
+          <span class="lap-caret">?</span>
+        </button>
+        <div id="lapMenu" class="lap-menu" role="listbox" aria-label="Select lap">
+          <input id="lapSearch" class="lap-search" type="text" placeholder="Search laps..." />
+          <div id="lapOptions" class="lap-options"></div>
+        </div>
+      </div>
+      <button id="lapPrev" type="button">Prev</button>
+      <button id="lapNext" type="button">Next</button>
       <div class="dropdown">
         <button id="viewBtn" type="button">View Inputs</button>
         <div id="viewMenu" class="dropdown-menu" role="menu" aria-label="View Inputs">
@@ -52,11 +62,20 @@
   <script>
     let chart;
     let simulationRunning = false;
+    let lapList = [];
+    let selectedLap = null;
     const viewBtn = document.getElementById("viewBtn");
     const viewMenu = document.getElementById("viewMenu");
     const viewChecks = Array.from(viewMenu.querySelectorAll("input[type='checkbox']"));
     const navToggle = document.getElementById("navToggle");
     const navMenu = document.getElementById("navMenu");
+    const lapToggle = document.getElementById("lapToggle");
+    const lapMenu = document.getElementById("lapMenu");
+    const lapSearch = document.getElementById("lapSearch");
+    const lapOptions = document.getElementById("lapOptions");
+    const lapLabel = document.getElementById("lapLabel");
+    const lapPrev = document.getElementById("lapPrev");
+    const lapNext = document.getElementById("lapNext");
     const monthNames = ["Jan.", "Feb.", "Mar.", "Apr.", "May.", "Jun.", "Jul.", "Aug.", "Sep.", "Oct.", "Nov.", "Dec."];
 
     function formatDateTime(ms) {
@@ -124,14 +143,57 @@
       const laps = j.laps || [0];
       const latest = j.latest ?? (laps.length ? laps[laps.length-1] : 0);
 
-      const sel = document.getElementById("lapSel");
-      sel.innerHTML = "";
-      laps.forEach(l => {
-        const opt = document.createElement("option");
-        opt.value = l; opt.textContent = l;
-        if (l === latest) opt.selected = true;
-        sel.appendChild(opt);
+      lapList = laps.slice().sort((a, b) => a - b);
+      const nextSelection = selectedLap !== null && lapList.includes(selectedLap) ? selectedLap : latest;
+      setSelectedLap(nextSelection, { shouldLoad: false });
+      renderLapOptions();
+      updateLapNavButtons();
+    }
+
+    function setSelectedLap(lapId, { shouldLoad = true } = {}) {
+      selectedLap = lapId;
+      lapLabel.textContent = `Lap ${lapId}`;
+      renderLapOptions();
+      updateLapNavButtons();
+      if (shouldLoad) {
+        loadLap(lapId);
+      }
+    }
+
+    function renderLapOptions() {
+      const query = lapSearch.value.trim();
+      const filtered = query
+        ? lapList.filter(l => String(l).includes(query))
+        : lapList;
+
+      lapOptions.innerHTML = "";
+      if (!filtered.length) {
+        const empty = document.createElement("div");
+        empty.className = "lap-empty";
+        empty.textContent = "No laps found";
+        lapOptions.appendChild(empty);
+        return;
+      }
+
+      filtered.forEach(lapId => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = `lap-option${lapId === selectedLap ? " active" : ""}`;
+        btn.dataset.lap = lapId;
+        btn.textContent = `Lap ${lapId}`;
+        lapOptions.appendChild(btn);
       });
+    }
+
+    function updateLapNavButtons() {
+      if (!lapList.length || selectedLap === null) {
+        lapPrev.disabled = true;
+        lapNext.disabled = true;
+        return;
+      }
+      const index = lapList.indexOf(selectedLap);
+      lapPrev.disabled = index <= 0;
+      lapNext.disabled = index === -1 || index >= lapList.length - 1;
     }
 
     async function loadLap(lapId) {
@@ -226,6 +288,49 @@
       checkbox.addEventListener("change", applySeriesVisibility);
     });
 
+    lapToggle.addEventListener("click", (event) => {
+      event.stopPropagation();
+      lapMenu.classList.toggle("open");
+      if (lapMenu.classList.contains("open")) {
+        lapSearch.focus();
+        lapSearch.select();
+      }
+    });
+
+    lapOptions.addEventListener("click", (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      if (!target.classList.contains("lap-option")) return;
+      const lapId = Number(target.dataset.lap);
+      if (!Number.isNaN(lapId)) {
+        setSelectedLap(lapId);
+      }
+    });
+
+    lapSearch.addEventListener("input", renderLapOptions);
+
+    document.addEventListener("click", (event) => {
+      if (!lapMenu.classList.contains("open")) return;
+      if (lapMenu.contains(event.target) || lapToggle.contains(event.target)) return;
+      lapMenu.classList.remove("open");
+    });
+
+    lapPrev.addEventListener("click", () => {
+      if (!lapList.length) return;
+      const index = lapList.indexOf(selectedLap);
+      if (index > 0) {
+        setSelectedLap(lapList[index - 1]);
+      }
+    });
+
+    lapNext.addEventListener("click", () => {
+      if (!lapList.length) return;
+      const index = lapList.indexOf(selectedLap);
+      if (index !== -1 && index < lapList.length - 1) {
+        setSelectedLap(lapList[index + 1]);
+      }
+    });
+
     navToggle.addEventListener("click", (event) => {
       event.stopPropagation();
       navMenu.classList.toggle("open");
@@ -236,11 +341,6 @@
       if (navMenu.contains(event.target) || navToggle.contains(event.target)) return;
       navMenu.classList.remove("open");
     });
-
-    document.getElementById("loadBtn").onclick = async () => {
-      const lapId = Number(document.getElementById("lapSel").value);
-      await loadLap(lapId);
-    };
 
     const simBtn = document.getElementById("simBtn");
     
@@ -265,8 +365,9 @@
     (async () => {
       await updateSimulationStatus();
       await loadLaps();
-      const lapId = Number(document.getElementById("lapSel").value);
-      await loadLap(lapId);
+      if (selectedLap !== null) {
+        await loadLap(selectedLap);
+      }
     })();
   </script>
 </body>

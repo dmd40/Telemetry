@@ -159,6 +159,79 @@ select, button {
   box-shadow: 0 2px 10px var(--shadow);
 }
 
+.lap-picker {
+  position: relative;
+}
+
+.lap-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 140px;
+}
+
+.lap-caret {
+  font-size: 0.8rem;
+  opacity: 0.7;
+}
+
+.lap-menu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 12;
+  min-width: 220px;
+  background: white;
+  border: 1px solid #E0E6ED;
+  border-radius: 12px;
+  padding: 10px;
+  box-shadow: 0 8px 22px rgba(0,0,0,.15);
+  display: none;
+}
+
+.lap-menu.open {
+  display: block;
+}
+
+.lap-search {
+  width: 100%;
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid #E0E6ED;
+  margin-bottom: 8px;
+}
+
+.lap-options {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 200px;
+  overflow: auto;
+}
+
+.lap-option {
+  border: none;
+  background: transparent;
+  text-align: left;
+  padding: 6px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+  color: var(--dark);
+}
+
+.lap-option:hover,
+.lap-option.active {
+  background: var(--light);
+  font-weight: 600;
+}
+
+.lap-empty {
+  padding: 6px 8px;
+  color: var(--neutral);
+  font-size: 12px;
+}
+
 .row {
   display: flex;
   gap: 12px;

@@ -13,16 +13,13 @@ from pydantic import BaseModel
 DB_PATH = "telemetry.db"
 
 # -----------------------------
-# Config - adjust via environment, change throughout different vehicels 
-# We should keep each car we have, seperate files/databases etc.
+# Config - adjust via environment, change throughout different vehicles 
+# We should keep each car we have, separate files/databases etc.
 # i.e VOLT = car_1 , SPECTRE - car_2 etc. , and VOID = car_3
 # -----------------------------
-SERIAL_PORT = os.environ.get("TELEM_PORT", "COM5")   # ONLY OPERABLE IN WINDOWS 
-BAUD = int(os.environ.get("TELEM_BAUD", "115200"))
+SERIAL_PORT = os.environ.get("TELEM_PORT", "COM5")   # ONLY OPERABLE IN WINDOWS , SET COM TO YOUR SERIAL PORT, OR USB !!!!
+# You must set k_t and gear_ratio for motor / drive train data to be accurate and meaningful.
 
-# Torque model (only used if incoming packet data doesn't include torque)
-# torque (Nm) ≈ k_t * I_motor * gear_ratio * drivetrain_eff
-# You must set k_t and gear_ratio for your motor/drivetrain to be meaningful.
 K_T_NM_PER_AMP = float(os.environ.get("K_T", "0.06"))      # Example only
 GEAR_RATIO = float(os.environ.get("GEAR_RATIO", "10.0"))   # Example only
 DRIVETRAIN_EFF = float(os.environ.get("EFF", "0.9"))      # Example only
@@ -202,7 +199,7 @@ async def serial_reader():
             
         try:
             ser = serial.Serial(SERIAL_PORT, BAUD, timeout=1)
-            ser.reset_input_buffer()
+            ser.reset_input_buffer()    
 
             while True:
                 if simulation_mode:
@@ -349,6 +346,6 @@ async def ws_endpoint(websocket: WebSocket):
         if latest_sample:
             await websocket.send_text(json.dumps(latest_sample))
         while True:
-            await websocket.receive_text()  # keep alive (client can send pings)
+            await websocket.receive_text()  # keeps alive (client can send pings)
     except WebSocketDisconnect:
         clients.discard(websocket)
