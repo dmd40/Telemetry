@@ -1,6 +1,6 @@
 # Back End
 
-Backend service is implemented by `../app.py` (FastAPI).
+Backend service is implemented by `app.py` (FastAPI).
 
 ## Responsibilities
 - Telemetry ingest endpoint(s)
@@ -13,5 +13,5 @@ Backend service is implemented by `../app.py` (FastAPI).
 ```powershell
 py -3.12 -m venv .venv312
 .\.venv312\Scripts\python.exe -m pip install -r requirements.txt
-.\.venv312\Scripts\python.exe -m uvicorn app:app --host 0.0.0.0 --port 8000
+.\.venv312\Scripts\python.exe -m uvicorn backend.app:app --host 0.0.0.0 --port 8000
 ```

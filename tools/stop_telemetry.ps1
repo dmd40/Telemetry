@@ -1,6 +1,7 @@
 $ErrorActionPreference = "Stop"
 
-$root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$root = Split-Path -Parent $scriptDir
 $runtimeDir = Join-Path $root ".runtime"
 $statePath = Join-Path $runtimeDir "telemetry_state.json"
 
@@ -32,9 +33,9 @@ if (Test-Path $statePath) {
   } catch {}
 }
 
-# Fallback: stop any uvicorn app.py process from this project.
+# Fallback: stop any uvicorn telemetry process from this project.
 $uvicornProcs = Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object {
-  $_.CommandLine -like "*uvicorn app:app*" -and $_.CommandLine -like "*Telemetry-main*"
+  (($_.CommandLine -like "*uvicorn backend.app:app*") -or ($_.CommandLine -like "*uvicorn app:app*")) -and $_.CommandLine -like "*Telemetry-main*"
 }
 foreach ($p in $uvicornProcs) {
   try {

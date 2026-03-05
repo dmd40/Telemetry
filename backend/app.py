@@ -19,7 +19,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-DB_PATH = "telemetry.db"
+BACKEND_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = BACKEND_DIR.parent
+STATIC_DIR = PROJECT_ROOT / "static"
+DB_PATH = os.environ.get("TELEM_DB_PATH", str(PROJECT_ROOT / "telemetry.db"))
 
 # -----------------------------
 # Config - adjust via environment, change throughout different vehicles 
@@ -33,7 +36,7 @@ INGEST_TOKEN = os.environ.get("INGEST_TOKEN", "")
 CORS_ALLOW_ORIGINS = os.environ.get("CORS_ALLOW_ORIGINS", "*")
 RETENTION_DAYS = int(os.environ.get("RETENTION_DAYS", "14"))
 RETENTION_PRUNE_INTERVAL_SEC = int(os.environ.get("RETENTION_PRUNE_INTERVAL_SEC", "300"))
-LOG_DIR = os.environ.get("TELEM_LOG_DIR", "logs")
+LOG_DIR = os.environ.get("TELEM_LOG_DIR", str(PROJECT_ROOT / "logs"))
 LOG_FILE_PREFIX = "telemetry_"
 LOG_FILE_SUFFIX = ".tsv"
 ALLOWED_LOG_METRICS = {"V", "A", "Ah", "mph", "torque"}
@@ -50,7 +53,7 @@ DRIVETRAIN_EFF = float(os.environ.get("EFF", "0.9"))      # Example only
 # -----------------------------
 
 app = FastAPI()
-app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 if CORS_ALLOW_ORIGINS.strip() == "*":
     cors_origins = ["*"]

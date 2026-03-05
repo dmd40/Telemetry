@@ -4,7 +4,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$root = Split-Path -Parent $scriptDir
 $runtimeDir = Join-Path $root ".runtime"
 $statePath = Join-Path $runtimeDir "telemetry_state.json"
 $venvDir = Join-Path $root ".venv312"
@@ -19,7 +20,7 @@ function Stop-TelemetryApiIfRunning {
   }
 
   $uvicornProcs = Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object {
-    $_.CommandLine -like "*uvicorn app:app*" -and $_.CommandLine -like "*Telemetry-main*"
+    (($_.CommandLine -like "*uvicorn backend.app:app*") -or ($_.CommandLine -like "*uvicorn app:app*")) -and $_.CommandLine -like "*Telemetry-main*"
   }
   foreach ($p in $uvicornProcs) {
     try { Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop } catch {}
@@ -51,7 +52,7 @@ Remove-Item $apiLog, $apiErr -ErrorAction SilentlyContinue
 
 $apiProc = Start-Process `
   -FilePath $venvPython `
-  -ArgumentList @("-m", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000") `
+  -ArgumentList @("-m", "uvicorn", "backend.app:app", "--host", "0.0.0.0", "--port", "8000") `
   -WorkingDirectory $root `
   -WindowStyle Hidden `
   -RedirectStandardOutput $apiLog `

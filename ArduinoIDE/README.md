@@ -6,6 +6,7 @@ ESP8266 sketches and Arduino IDE files for telemetry upload/relay testing.
 - `esp8266_vehicle_telemetry/esp8266_vehicle_telemetry.ino`
 - `esp8266_vehicle_telemetry.ino`
 - `arduinoIDEcode.cpp`
+- `i2c_scan_example.ino`
 
 ## Purpose
 - Connect ESP8266 to network
