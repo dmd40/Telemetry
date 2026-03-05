@@ -11,13 +11,15 @@
     <div class="nav-left">
       <div class="nav-dropdown">
         <button id="navToggle" class="nav-dropdown-toggle">
-          VOID Telemetry <span class="nav-caret">▾</span>
+          VOID Telemetry <span class="nav-caret">&#9662;</span>
         </button>
         <div id="navMenu" class="nav-dropdown-menu">
           <a href="/static/index.html">Live</a>
           <a href="/static/lap.html">Lap Plot</a>
           <a href="/static/gps.html">GPS</a>
+          <a href="/static/logs.html">Logs</a>
           <button id="simBtn" class="nav-sim-btn">Start Simulation</button>
+          <button id="simClearBtn" class="nav-clear-btn">Clear Sim Data</button>
         </div>
       </div>
     </div>
@@ -34,7 +36,7 @@
       <div class="lap-picker">
         <button id="lapToggle" class="lap-toggle" type="button">
           <span id="lapLabel">--</span>
-          <span class="lap-caret">?</span>
+          <span class="lap-caret">&#9662;</span>
         </button>
         <div id="lapMenu" class="lap-menu" role="listbox" aria-label="Select lap">
           <input id="lapSearch" class="lap-search" type="text" placeholder="Search laps..." />
@@ -48,6 +50,7 @@
         <div id="viewMenu" class="dropdown-menu" role="menu" aria-label="View Inputs">
           <label class="dropdown-item"><input type="checkbox" data-series="V" checked /> Voltage</label>
           <label class="dropdown-item"><input type="checkbox" data-series="A" checked /> Current</label>
+          <label class="dropdown-item"><input type="checkbox" data-series="Ah" checked /> Amp Hours</label>
           <label class="dropdown-item"><input type="checkbox" data-series="mph" checked /> Speed</label>
           <label class="dropdown-item"><input type="checkbox" data-series="torque" checked /> Torque</label>
         </div>
@@ -64,6 +67,11 @@
     let simulationRunning = false;
     let lapList = [];
     let selectedLap = null;
+    let ws = null;
+    let lapTimeBaseMs = null;
+    let lapTimestamps = [];
+    let lastLapSampleMs = null;
+    const MAX_LAP_POINTS = 3000;
     const viewBtn = document.getElementById("viewBtn");
     const viewMenu = document.getElementById("viewMenu");
     const viewChecks = Array.from(viewMenu.querySelectorAll("input[type='checkbox']"));
@@ -140,8 +148,25 @@
     async function loadLaps() {
       const res = await fetch("/api/laps");
       const j = await res.json();
-      const laps = j.laps || [0];
-      const latest = j.latest ?? (laps.length ? laps[laps.length-1] : 0);
+      const laps = (Array.isArray(j.laps) ? j.laps : [])
+        .map(Number)
+        .filter(lap => Number.isFinite(lap) && lap > 0);
+      const latestRaw = Number(j.latest);
+      const latest = Number.isFinite(latestRaw) && latestRaw > 0
+        ? latestRaw
+        : (laps.length ? laps[laps.length - 1] : null);
+
+      if (!laps.length) {
+        lapList = [];
+        setSelectedLap(null, { shouldLoad: false });
+        renderLapOptions();
+        updateLapNavButtons();
+        if (chart) {
+          chart.destroy();
+          chart = null;
+        }
+        return;
+      }
 
       lapList = laps.slice().sort((a, b) => a - b);
       const nextSelection = selectedLap !== null && lapList.includes(selectedLap) ? selectedLap : latest;
@@ -151,6 +176,17 @@
     }
 
     function setSelectedLap(lapId, { shouldLoad = true } = {}) {
+      if (lapId === null || lapId === undefined) {
+        selectedLap = null;
+        lapLabel.textContent = "--";
+        renderLapOptions();
+        updateLapNavButtons();
+        if (shouldLoad && chart) {
+          chart.destroy();
+          chart = null;
+        }
+        return;
+      }
       selectedLap = lapId;
       lapLabel.textContent = `Lap ${lapId}`;
       renderLapOptions();
@@ -201,19 +237,27 @@
       const j = await res.json();
       const data = j.data || [];
 
-      if (!data.length) return;
+      if (!data.length) {
+        lapTimeBaseMs = null;
+        lapTimestamps = [];
+        lastLapSampleMs = null;
+        if (chart) {
+          chart.destroy();
+          chart = null;
+        }
+        return;
+      }
 
-      const t0 = data[0].t_ms;
-      const maxWindowMs = 15000;
-      const filtered = data.filter(p => (p.t_ms - t0) <= maxWindowMs);
-      if (!filtered.length) return;
-      const labels = filtered.map(p => (p.t_ms - t0)/1000.0); // seconds since lap start
-      const timestamps = filtered.map(p => p.t_ms);
+      lapTimestamps = data.map(p => Number(p.t_ms)).filter(v => Number.isFinite(v));
+      lapTimeBaseMs = lapTimestamps.length ? lapTimestamps[0] : null;
+      lastLapSampleMs = lapTimestamps.length ? lapTimestamps[lapTimestamps.length - 1] : null;
+      const labels = lapTimestamps.map(t => (t - lapTimeBaseMs) / 1000.0); // seconds since lap start
 
-      const volts = filtered.map(p => p.V);
-      const amps  = filtered.map(p => p.A);
-      const mph   = filtered.map(p => p.mph);
-      const torque = filtered.map(p => p.torque);
+      const volts = data.map(p => p.V);
+      const amps  = data.map(p => p.A);
+      const ampHours = data.map(p => p.Ah);
+      const mph   = data.map(p => p.mph);
+      const torque = data.map(p => p.torque);
 
       const ctx = document.getElementById("chart").getContext("2d");
       if (chart) chart.destroy();
@@ -223,10 +267,11 @@
         data: {
           labels,
           datasets: [
-            { label: "Voltage (V)", data: volts, borderColor: "blue", tension: 0.2, pointRadius: 0, seriesKey: "V" },
-            { label: "Current (A)", data: amps,  borderColor: "green", tension: 0.2, pointRadius: 0, seriesKey: "A" },
-            { label: "Speed (mph)", data: mph,   borderColor: "orange", tension: 0.2, pointRadius: 0, seriesKey: "mph" },
-            { label: "Torque (Nm)", data: torque, borderColor: "#ef4444", tension: 0.2, pointRadius: 0, seriesKey: "torque" },
+            { label: "Voltage (V)", data: volts, borderColor: "#4f7eb8", tension: 0.2, pointRadius: 0, seriesKey: "V" },
+            { label: "Current (A)", data: amps,  borderColor: "#2e8d73", tension: 0.2, pointRadius: 0, seriesKey: "A" },
+            { label: "Amp Hours (Ah)", data: ampHours, borderColor: "#6a5aa6", tension: 0.2, pointRadius: 0, seriesKey: "Ah" },
+            { label: "Speed (mph)", data: mph,   borderColor: "#b77a26", tension: 0.2, pointRadius: 0, seriesKey: "mph" },
+            { label: "Torque (Nm)", data: torque, borderColor: "#a44a44", tension: 0.2, pointRadius: 0, seriesKey: "torque" },
           ]
         },
         options: {
@@ -234,6 +279,9 @@
           animation: false,
           interaction: { mode: "index", intersect: false },
           plugins: {
+            legend: {
+              labels: { color: "#d5e2f2" }
+            },
             tooltip: {
               mode: "index",
               intersect: false,
@@ -241,26 +289,110 @@
                 title(items) {
                   if (!items.length) return "";
                   const idx = items[0].dataIndex;
-                  return formatDateTime(timestamps[idx]);
+                  return formatDateTime(lapTimestamps[idx]);
                 }
               }
             },
             hoverLine: {
-              color: "#000000",
+              color: "#8cb9ec",
               labelFormatter(dataPoints) {
                 if (!dataPoints || !dataPoints.length) return "";
                 const idx = dataPoints[0].dataIndex;
-                return formatDateTime(timestamps[idx]);
+                return formatDateTime(lapTimestamps[idx]);
               }
             }
           },
           scales: {
-            x: { title: { display: true, text: "Time (s)" } }
+            x: {
+              title: { display: true, text: "Time (s)", color: "#d5e2f2" },
+              ticks: { color: "#d5e2f2" },
+              grid: { color: "rgba(159, 183, 211, 0.2)" }
+            },
+            y: {
+              ticks: { color: "#d5e2f2" },
+              grid: { color: "rgba(159, 183, 211, 0.2)" }
+            }
           }
         }
       });
       applySeriesVisibility();
 
+    }
+
+    function appendLivePoint(sample) {
+      if (!chart || selectedLap === null) return;
+      const lap = Number(sample.lap);
+      if (!Number.isFinite(lap) || lap !== Number(selectedLap)) return;
+
+      const tMs = Number(sample.t_ms);
+      if (!Number.isFinite(tMs)) return;
+      if (lastLapSampleMs !== null && tMs <= lastLapSampleMs) return;
+
+      if (lapTimeBaseMs === null) lapTimeBaseMs = tMs;
+      const valuesBySeries = {
+        V: sample.V ?? null,
+        A: sample.A ?? null,
+        Ah: sample.Ah ?? null,
+        mph: sample.mph ?? null,
+        torque: sample.torque ?? null
+      };
+
+      lapTimestamps.push(tMs);
+      chart.data.labels.push((tMs - lapTimeBaseMs) / 1000.0);
+      chart.data.datasets.forEach((ds) => {
+        ds.data.push(valuesBySeries[ds.seriesKey] ?? null);
+      });
+      lastLapSampleMs = tMs;
+
+      if (chart.data.labels.length > MAX_LAP_POINTS) {
+        chart.data.labels.shift();
+        lapTimestamps.shift();
+        chart.data.datasets.forEach(ds => ds.data.shift());
+        lapTimeBaseMs = lapTimestamps.length ? lapTimestamps[0] : null;
+        if (lapTimeBaseMs !== null) {
+          chart.data.labels = lapTimestamps.map(t => (t - lapTimeBaseMs) / 1000.0);
+        } else {
+          chart.data.labels = [];
+        }
+      }
+
+      chart.update();
+    }
+
+    function connectLapStream() {
+      if (ws) {
+        try { ws.close(); } catch (e) {}
+      }
+      const wsProto = location.protocol === "https:" ? "wss" : "ws";
+      ws = new WebSocket(`${wsProto}://${location.host}/ws`);
+
+      ws.onopen = () => {
+        ws.send("lap");
+      };
+
+      ws.onmessage = (evt) => {
+        let sample;
+        try {
+          sample = JSON.parse(evt.data);
+        } catch (e) {
+          return;
+        }
+        const liveLap = Number(sample.lap);
+        if (selectedLap === null && Number.isFinite(liveLap) && liveLap > 0) {
+          if (!lapList.includes(liveLap)) {
+            lapList.push(liveLap);
+            lapList.sort((a, b) => a - b);
+          }
+          setSelectedLap(liveLap, { shouldLoad: false });
+          loadLap(liveLap).catch(() => {});
+          return;
+        }
+        appendLivePoint(sample);
+      };
+
+      ws.onclose = () => {
+        setTimeout(connectLapStream, 1200);
+      };
     }
 
     function applySeriesVisibility() {
@@ -343,6 +475,7 @@
     });
 
     const simBtn = document.getElementById("simBtn");
+    const simClearBtn = document.getElementById("simClearBtn");
     
     async function updateSimulationStatus() {
       const res = await fetch("/api/simulation/status");
@@ -362,13 +495,32 @@
       await loadLaps();
     };
 
+    simClearBtn.onclick = async () => {
+      const ok = confirm("Clear all simulator-generated data?");
+      if (!ok) return;
+      try {
+        await fetch("/api/simulation/clear", { method: "POST" });
+        await updateSimulationStatus();
+        await loadLaps();
+        if (selectedLap !== null) {
+          await loadLap(selectedLap);
+        }
+      } catch (e) {
+        console.error("Error clearing simulation data:", e);
+      }
+    };
+
     (async () => {
       await updateSimulationStatus();
       await loadLaps();
       if (selectedLap !== null) {
         await loadLap(selectedLap);
       }
+      connectLapStream();
     })();
+    setInterval(() => {
+      updateSimulationStatus().catch(() => {});
+    }, 1000);
   </script>
 </body>
 </html>

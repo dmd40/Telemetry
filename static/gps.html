@@ -12,13 +12,15 @@
     <div class="nav-left">
       <div class="nav-dropdown">
         <button id="navToggle" class="nav-dropdown-toggle">
-          VOID Telemetry <span class="nav-caret">▾</span>
+          VOID Telemetry <span class="nav-caret">&#9662;</span>
         </button>
         <div id="navMenu" class="nav-dropdown-menu">
           <a href="/static/index.html">Live</a>
           <a href="/static/lap.html">Lap Plot</a>
           <a href="/static/gps.html">GPS</a>
+          <a href="/static/logs.html">Logs</a>
           <button id="simBtn" class="nav-sim-btn">Start Simulation</button>
+          <button id="simClearBtn" class="nav-clear-btn">Clear Sim Data</button>
         </div>
       </div>
     </div>
@@ -43,41 +45,132 @@
 
   <script>
     const map = L.map('map').setView([33.3, 117.9], 17);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 20 }).addTo(map);
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+      maxZoom: 20,
+      attribution: '&copy; OpenStreetMap contributors &copy; CARTO'
+    }).addTo(map);
 
     let poly;
     let simulationRunning = false;
+    let selectedLap = null;
+    let ws = null;
+
+    function attachPoint(lat, lon, recenter = false) {
+      const pt = [Number(lat), Number(lon)];
+      if (Number.isNaN(pt[0]) || Number.isNaN(pt[1])) return;
+      if (!poly) {
+        poly = L.polyline([pt], { color: "#8cb9ec", weight: 4 }).addTo(map);
+        map.setView(pt, 17);
+        return;
+      }
+      poly.addLatLng(pt);
+      if (recenter) {
+        map.panTo(pt, { animate: false });
+      }
+    }
 
     async function loadLaps() {
       const res = await fetch("/api/laps");
       const j = await res.json();
-      const laps = j.laps || [0];
-      const latest = j.latest ?? (laps.length ? laps[laps.length-1] : 0);
+      const laps = (Array.isArray(j.laps) ? j.laps : [])
+        .map(Number)
+        .filter(lap => Number.isFinite(lap) && lap > 0);
+      const latestRaw = Number(j.latest);
+      const latest = Number.isFinite(latestRaw) && latestRaw > 0
+        ? latestRaw
+        : (laps.length ? laps[laps.length - 1] : null);
 
       const sel = document.getElementById("lapSel");
       sel.innerHTML = "";
       laps.forEach(l => {
         const opt = document.createElement("option");
         opt.value = l; opt.textContent = l;
-        if (l === latest) opt.selected = true;
         sel.appendChild(opt);
       });
-      return latest;
+
+      const nextLap = selectedLap !== null && laps.includes(selectedLap) ? selectedLap : latest;
+      if (nextLap !== null) {
+        sel.value = String(nextLap);
+        selectedLap = Number(nextLap);
+      } else {
+        selectedLap = null;
+      }
+      return nextLap;
     }
 
     async function showLap(lapId) {
+      if (lapId === null || lapId === undefined || Number.isNaN(Number(lapId))) {
+        selectedLap = null;
+        if (poly) {
+          map.removeLayer(poly);
+          poly = null;
+        }
+        return;
+      }
+      selectedLap = Number(lapId);
       const res = await fetch(`/api/lap/${lapId}/gps`);
       const j = await res.json();
       const pts = (j.points || [])
         .filter(p => p.lat !== null && p.lon !== null)
         .map(p => [p.lat, p.lon]);
 
-      if (!pts.length) return;
+      if (!pts.length) {
+        if (poly) {
+          map.removeLayer(poly);
+          poly = null;
+        }
+        return;
+      }
 
       if (poly) map.removeLayer(poly);
-      poly = L.polyline(pts, { }).addTo(map);
+      poly = L.polyline(pts, { color: "#8cb9ec", weight: 4 }).addTo(map);
       map.fitBounds(poly.getBounds(), { padding: [20,20] });
-      map.fitBoun
+    }
+
+    function connectGpsStream() {
+      if (ws) {
+        try { ws.close(); } catch (e) {}
+      }
+      const wsProto = location.protocol === "https:" ? "wss" : "ws";
+      ws = new WebSocket(`${wsProto}://${location.host}/ws`);
+
+      ws.onopen = () => {
+        ws.send("gps");
+      };
+
+      ws.onmessage = (evt) => {
+        let sample;
+        try {
+          sample = JSON.parse(evt.data);
+        } catch (e) {
+          return;
+        }
+        if (sample.lat === null || sample.lon === null || sample.lat === undefined || sample.lon === undefined) {
+          return;
+        }
+
+        const lap = Number(sample.lap ?? 0);
+        if (!Number.isFinite(lap) || lap <= 0) return;
+        if (selectedLap === null) {
+          selectedLap = lap;
+          const sel = document.getElementById("lapSel");
+          const hasOption = Array.from(sel.options).some(opt => Number(opt.value) === lap);
+          if (!hasOption) {
+            const opt = document.createElement("option");
+            opt.value = String(lap);
+            opt.textContent = String(lap);
+            sel.appendChild(opt);
+          }
+          sel.value = String(lap);
+        }
+        if (lap !== selectedLap) return;
+
+        attachPoint(sample.lat, sample.lon, false);
+      };
+
+      ws.onclose = () => {
+        setTimeout(connectGpsStream, 1200);
+      };
     }
 
     document.getElementById("latestBtn").onclick = async () => {
@@ -92,6 +185,7 @@
     };
 
     const simBtn = document.getElementById("simBtn");
+    const simClearBtn = document.getElementById("simClearBtn");
     const navToggle = document.getElementById("navToggle");
     const navMenu = document.getElementById("navMenu");
     
@@ -99,7 +193,6 @@
       const res = await fetch("/api/simulation/status");
       const j = await res.json();
       simulationRunning = j.running;
-      simBtn.textContent = simulationRunning ? "Stop Simulation" : "Start Simulation";
       simBtn.textContent = simulationRunning ? "Stop Simulation" : "Start Simulation";
       simBtn.classList.toggle("active", simulationRunning);
     }
@@ -112,6 +205,19 @@
       }
       await updateSimulationStatus();
       await loadLaps();
+    };
+
+    simClearBtn.onclick = async () => {
+      const ok = confirm("Clear all simulator-generated data?");
+      if (!ok) return;
+      try {
+        await fetch("/api/simulation/clear", { method: "POST" });
+        await updateSimulationStatus();
+        const latest = await loadLaps();
+        await showLap(latest);
+      } catch (e) {
+        console.error("Error clearing simulation data:", e);
+      }
     };
 
     navToggle.addEventListener("click", (event) => {
@@ -129,7 +235,11 @@
       await updateSimulationStatus();
       const latest = await loadLaps();
       await showLap(latest);
+      connectGpsStream();
     })();
+    setInterval(() => {
+      updateSimulationStatus().catch(() => {});
+    }, 1000);
   </script>
 </body>
 </html>
