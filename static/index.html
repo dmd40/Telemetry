@@ -11,13 +11,15 @@
     <div class="nav-left">
       <div class="nav-dropdown">
         <button id="navToggle" class="nav-dropdown-toggle">
-          VOID Telemetry <span class="nav-caret">▾</span>
+          VOID Telemetry <span class="nav-caret">&#9662;</span>
         </button>
         <div id="navMenu" class="nav-dropdown-menu">
           <a href="/static/index.html">Live</a>
           <a href="/static/lap.html">Lap Plot</a>
           <a href="/static/gps.html">GPS</a>
+          <a href="/static/logs.html">Logs</a>
           <button id="simBtn" class="nav-sim-btn">Start Simulation</button>
+          <button id="simClearBtn" class="nav-clear-btn">Clear Sim Data</button>
         </div>
       </div>
     </div>
@@ -81,7 +83,8 @@
 
   <!-- JavaScript for WebSocket and Charts -->
   <script>
-    const ws = new WebSocket(`ws://${location.host}/ws`);
+    const wsProto = location.protocol === "https:" ? "wss" : "ws";
+    const ws = new WebSocket(`${wsProto}://${location.host}/ws`);
     let simulationRunning = false;
     
     // Data buffers (last 60 seconds at ~10Hz)
@@ -162,11 +165,11 @@
         data: {
           labels: [],
           datasets: [
-            { label: 'Voltage (V)', data: [], borderColor: '#3b82f6', backgroundColor: 'rgba(59, 130, 246, 0.1)', tension: 0.3, fill: true, pointRadius: 2, borderWidth: 2 },
-            { label: 'Current (A)', data: [], borderColor: '#10b981', backgroundColor: 'rgba(16, 185, 129, 0.1)', tension: 0.3, fill: true, pointRadius: 2, borderWidth: 2 }
+            { label: 'Voltage (V)', data: [], borderColor: '#4f7eb8', backgroundColor: 'rgba(79, 126, 184, 0.18)', tension: 0.3, fill: true, pointRadius: 2, borderWidth: 2 },
+            { label: 'Current (A)', data: [], borderColor: '#2e8d73', backgroundColor: 'rgba(46, 141, 115, 0.18)', tension: 0.3, fill: true, pointRadius: 2, borderWidth: 2 }
           ]
         },
-        options: { responsive: true, animation: false, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false }, scales: { y: { beginAtZero: true, grid: { color: 'rgba(42, 63, 84, 0.15)' }, ticks: { color: '#2A3F54' } }, x: { grid: { color: 'rgba(42, 63, 84, 0.15)' }, ticks: { color: '#2A3F54' } } }, plugins: { legend: { labels: { color: '#2A3F54' } }, tooltip: { mode: 'index', intersect: false, callbacks: { title(items) { if (!items.length) return ''; const idx = items[0].dataIndex; const t = dataBuffer.timestamps[idx]; return t !== undefined ? `${(t / 1000).toFixed(2)}s` : ''; } } }, hoverLine: { color: '#4A6491' } } }
+        options: { responsive: true, animation: false, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false }, scales: { y: { beginAtZero: true, grid: { color: 'rgba(159, 183, 211, 0.2)' }, ticks: { color: '#d5e2f2' } }, x: { grid: { color: 'rgba(159, 183, 211, 0.2)' }, ticks: { color: '#d5e2f2' } } }, plugins: { legend: { labels: { color: '#d5e2f2' } }, tooltip: { mode: 'index', intersect: false, callbacks: { title(items) { if (!items.length) return ''; const idx = items[0].dataIndex; const t = dataBuffer.timestamps[idx]; return t !== undefined ? `${(t / 1000).toFixed(2)}s` : ''; } } }, hoverLine: { color: '#7aa9e0' } } }
       });
 
       // Chart 2: Speed
@@ -177,10 +180,10 @@
         data: {
           labels: [],
           datasets: [
-            { label: 'Speed (mph)', data: [], borderColor: '#f59e0b', backgroundColor: 'rgba(245, 158, 11, 0.1)', tension: 0.3, fill: true, pointRadius: 2, borderWidth: 2 }
+            { label: 'Speed (mph)', data: [], borderColor: '#b77a26', backgroundColor: 'rgba(183, 122, 38, 0.18)', tension: 0.3, fill: true, pointRadius: 2, borderWidth: 2 }
           ]
         },
-        options: { responsive: true, animation: false, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false }, scales: { y: { beginAtZero: true, grid: { color: 'rgba(42, 63, 84, 0.15)' }, ticks: { color: '#2A3F54' } }, x: { grid: { color: 'rgba(42, 63, 84, 0.15)' }, ticks: { color: '#2A3F54' } } }, plugins: { legend: { labels: { color: '#2A3F54' } }, tooltip: { mode: 'index', intersect: false, callbacks: { title(items) { if (!items.length) return ''; const idx = items[0].dataIndex; const t = dataBuffer.timestamps[idx]; return t !== undefined ? `${(t / 1000).toFixed(2)}s` : ''; } } }, hoverLine: { color: '#7A9CC6', valueLabel: { prefix: 'Speed', suffix: 'mph', decimals: 1 } } } }
+        options: { responsive: true, animation: false, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false }, scales: { y: { beginAtZero: true, grid: { color: 'rgba(159, 183, 211, 0.2)' }, ticks: { color: '#d5e2f2' } }, x: { grid: { color: 'rgba(159, 183, 211, 0.2)' }, ticks: { color: '#d5e2f2' } } }, plugins: { legend: { labels: { color: '#d5e2f2' } }, tooltip: { mode: 'index', intersect: false, callbacks: { title(items) { if (!items.length) return ''; const idx = items[0].dataIndex; const t = dataBuffer.timestamps[idx]; return t !== undefined ? `${(t / 1000).toFixed(2)}s` : ''; } } }, hoverLine: { color: '#8cb9ec', valueLabel: { prefix: 'Speed', suffix: 'mph', decimals: 1 } } } }
       });
 
       // Chart 3: Torque
@@ -191,10 +194,10 @@
         data: {
           labels: [],
           datasets: [
-            { label: 'Torque (Nm)', data: [], borderColor: '#ef4444', backgroundColor: 'rgba(239, 68, 68, 0.1)', tension: 0.3, fill: true, pointRadius: 2, borderWidth: 2 }
+            { label: 'Torque (Nm)', data: [], borderColor: '#a44a44', backgroundColor: 'rgba(164, 74, 68, 0.18)', tension: 0.3, fill: true, pointRadius: 2, borderWidth: 2 }
           ]
         },
-        options: { responsive: true, animation: false, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false }, scales: { y: { beginAtZero: true, grid: { color: 'rgba(42, 63, 84, 0.15)' }, ticks: { color: '#2A3F54' } }, x: { grid: { color: 'rgba(42, 63, 84, 0.15)' }, ticks: { color: '#2A3F54' } } }, plugins: { legend: { labels: { color: '#2A3F54' } }, tooltip: { mode: 'index', intersect: false, callbacks: { title(items) { if (!items.length) return ''; const idx = items[0].dataIndex; const t = dataBuffer.timestamps[idx]; return t !== undefined ? `${(t / 1000).toFixed(2)}s` : ''; } } }, hoverLine: { color: '#4A6491' } } }
+        options: { responsive: true, animation: false, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false }, scales: { y: { beginAtZero: true, grid: { color: 'rgba(159, 183, 211, 0.2)' }, ticks: { color: '#d5e2f2' } }, x: { grid: { color: 'rgba(159, 183, 211, 0.2)' }, ticks: { color: '#d5e2f2' } } }, plugins: { legend: { labels: { color: '#d5e2f2' } }, tooltip: { mode: 'index', intersect: false, callbacks: { title(items) { if (!items.length) return ''; const idx = items[0].dataIndex; const t = dataBuffer.timestamps[idx]; return t !== undefined ? `${(t / 1000).toFixed(2)}s` : ''; } } }, hoverLine: { color: '#7aa9e0' } } }
       });
 
       // Chart 4: Amp Hours
@@ -205,10 +208,10 @@
         data: {
           labels: [],
           datasets: [
-            { label: 'Amp Hours (Ah)', data: [], borderColor: '#8b5cf6', backgroundColor: 'rgba(139, 92, 246, 0.1)', tension: 0.3, fill: true, pointRadius: 2, borderWidth: 2 }
+            { label: 'Amp Hours (Ah)', data: [], borderColor: '#6a5aa6', backgroundColor: 'rgba(106, 90, 166, 0.18)', tension: 0.3, fill: true, pointRadius: 2, borderWidth: 2 }
           ]
         },
-        options: { responsive: true, animation: false, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false }, scales: { y: { beginAtZero: true, grid: { color: 'rgba(42, 63, 84, 0.15)' }, ticks: { color: '#2A3F54' } }, x: { grid: { color: 'rgba(42, 63, 84, 0.15)' }, ticks: { color: '#2A3F54' } } }, plugins: { legend: { labels: { color: '#2A3F54' } }, tooltip: { mode: 'index', intersect: false, callbacks: { title(items) { if (!items.length) return ''; const idx = items[0].dataIndex; const t = dataBuffer.timestamps[idx]; return t !== undefined ? `${(t / 1000).toFixed(2)}s` : ''; } } }, hoverLine: { color: '#4A6491' } } }
+        options: { responsive: true, animation: false, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false }, scales: { y: { beginAtZero: true, grid: { color: 'rgba(159, 183, 211, 0.2)' }, ticks: { color: '#d5e2f2' } }, x: { grid: { color: 'rgba(159, 183, 211, 0.2)' }, ticks: { color: '#d5e2f2' } } }, plugins: { legend: { labels: { color: '#d5e2f2' } }, tooltip: { mode: 'index', intersect: false, callbacks: { title(items) { if (!items.length) return ''; const idx = items[0].dataIndex; const t = dataBuffer.timestamps[idx]; return t !== undefined ? `${(t / 1000).toFixed(2)}s` : ''; } } }, hoverLine: { color: '#7aa9e0' } } }
       });
 
     }
@@ -276,6 +279,7 @@
     };
 
     const simBtn = document.getElementById("simBtn");
+    const simClearBtn = document.getElementById("simClearBtn");
     const navToggle = document.getElementById("navToggle");
     const navMenu = document.getElementById("navMenu");
     
@@ -302,7 +306,6 @@
           dataBuffer.A = [];
           dataBuffer.mph = [];
           dataBuffer.torque = [];
-          data
           dataBuffer.Ah = [];
           await fetch("/api/simulation/start", { method: "POST" });
         }
@@ -310,6 +313,31 @@
       } catch (e) {
         console.error("Error toggling simulation:", e);
       } 
+    };
+
+    simClearBtn.onclick = async () => {
+      const ok = confirm("Clear all simulator-generated data from logs and charts?");
+      if (!ok) return;
+      try {
+        await fetch("/api/simulation/clear", { method: "POST" });
+        startTime = null;
+        dataBuffer.timestamps = [];
+        dataBuffer.V = [];
+        dataBuffer.A = [];
+        dataBuffer.mph = [];
+        dataBuffer.torque = [];
+        dataBuffer.Ah = [];
+        document.getElementById("V").textContent = "--";
+        document.getElementById("A").textContent = "--";
+        document.getElementById("Ah").textContent = "--";
+        document.getElementById("mph").textContent = "--";
+        document.getElementById("torque").textContent = "--";
+        document.getElementById("ts").textContent = "never";
+        updateCharts();
+        await updateSimulationStatus();
+      } catch (e) {
+        console.error("Error clearing simulation data:", e);
+      }
     };
 
     navToggle.addEventListener("click", (event) => {
@@ -324,6 +352,10 @@
     });
 
     updateSimulationStatus();
+    setInterval(() => {
+      updateSimulationStatus().catch(() => {});
+    }, 1000);
   </script>
 </body>
 </html>
+

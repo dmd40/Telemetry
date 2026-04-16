@@ -1,0 +1,401 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Telemetry Logs</title>
+  <link rel="stylesheet" href="/static/css/styles.css">
+</head>
+<body>
+  <div class="nav">
+    <div class="nav-left">
+      <div class="nav-dropdown">
+        <button id="navToggle" class="nav-dropdown-toggle">
+          VOID Telemetry <span class="nav-caret">&#9662;</span>
+        </button>
+        <div id="navMenu" class="nav-dropdown-menu">
+          <a href="/static/index.html">Live</a>
+          <a href="/static/lap.html">Lap Plot</a>
+          <a href="/static/gps.html">GPS</a>
+          <a href="/static/logs.html">Logs</a>
+          <button id="simBtn" class="nav-sim-btn">Start Simulation</button>
+          <button id="simClearBtn" class="nav-clear-btn">Clear Sim Data</button>
+        </div>
+      </div>
+    </div>
+    <div class="nav-right">
+      <img src="/static/logo2.png" alt="VOID Telemetry logo" class="logo-img" />
+    </div>
+  </div>
+
+  <div class="page">
+    <h1>Telemetry Logs</h1>
+
+    <div class="row">
+      <label for="viewModeSel">View:</label>
+      <select id="viewModeSel">
+        <option value="none" selected>Raw rows</option>
+        <option value="day">Group by day</option>
+        <option value="lap">Group by lap</option>
+      </select>
+
+      <label for="limitSel">Rows:</label>
+      <select id="limitSel">
+        <option value="100">100</option>
+        <option value="300" selected>300</option>
+        <option value="500">500</option>
+        <option value="1000">1000</option>
+        <option value="2000">2000</option>
+      </select>
+
+      <label for="refreshSel">Refresh:</label>
+      <select id="refreshSel">
+        <option value="0">Manual</option>
+        <option value="1000">1s</option>
+        <option value="2000" selected>2s</option>
+        <option value="5000">5s</option>
+      </select>
+    </div>
+
+    <div class="row">
+      <label for="metricSel">Metric:</label>
+      <select id="metricSel">
+        <option value="V" selected>Voltage (V)</option>
+        <option value="A">Current (A)</option>
+        <option value="Ah">Amp Hours (Ah)</option>
+        <option value="mph">Speed (mph)</option>
+        <option value="torque">Torque (Nm)</option>
+      </select>
+
+      <label for="minVal">Min:</label>
+      <input id="minVal" type="number" step="any" placeholder="e.g. 6" />
+
+      <label for="maxVal">Max:</label>
+      <input id="maxVal" type="number" step="any" placeholder="e.g. 7" />
+
+      <label for="lapFilter">Laps:</label>
+      <input id="lapFilter" list="lapHints" type="text" placeholder="e.g. 1,2,5-8" />
+      <datalist id="lapHints"></datalist>
+    </div>
+
+    <div class="row">
+      <label for="fromTime">From:</label>
+      <input id="fromTime" type="datetime-local" />
+
+      <label for="toTime">To:</label>
+      <input id="toTime" type="datetime-local" />
+
+      <button id="applyBtn" type="button">Apply Filters</button>
+      <button id="clearBtn" type="button">Clear Filters</button>
+      <button id="refreshBtn" type="button">Refresh Now</button>
+    </div>
+
+    <div class="row">
+      <div class="logs-meta">Rows loaded: <span id="rowsLoaded">0</span></div>
+      <div class="logs-meta">Last refresh: <span id="lastRefresh">never</span></div>
+      <div class="logs-meta">Days in DB: <span id="daysCount">0</span></div>
+      <div class="logs-meta">Laps in DB: <span id="lapsCount">0</span></div>
+    </div>
+
+    <div id="logsError" class="logs-error" hidden></div>
+
+    <div class="panel logs-panel">
+      <div class="logs-table-wrap">
+        <table class="logs-table">
+          <thead id="logsHead"></thead>
+          <tbody id="logsBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const navToggle = document.getElementById("navToggle");
+    const navMenu = document.getElementById("navMenu");
+    const simBtn = document.getElementById("simBtn");
+    const simClearBtn = document.getElementById("simClearBtn");
+    const viewModeSel = document.getElementById("viewModeSel");
+    const limitSel = document.getElementById("limitSel");
+    const refreshSel = document.getElementById("refreshSel");
+    const metricSel = document.getElementById("metricSel");
+    const minVal = document.getElementById("minVal");
+    const maxVal = document.getElementById("maxVal");
+    const lapFilter = document.getElementById("lapFilter");
+    const fromTime = document.getElementById("fromTime");
+    const toTime = document.getElementById("toTime");
+    const applyBtn = document.getElementById("applyBtn");
+    const clearBtn = document.getElementById("clearBtn");
+    const refreshBtn = document.getElementById("refreshBtn");
+    const logsHead = document.getElementById("logsHead");
+    const logsBody = document.getElementById("logsBody");
+    const rowsLoaded = document.getElementById("rowsLoaded");
+    const lastRefresh = document.getElementById("lastRefresh");
+    const daysCount = document.getElementById("daysCount");
+    const lapsCount = document.getElementById("lapsCount");
+    const lapHints = document.getElementById("lapHints");
+    const logsError = document.getElementById("logsError");
+
+    const metricLabels = {
+      V: "Voltage (V)",
+      A: "Current (A)",
+      Ah: "Amp Hours (Ah)",
+      mph: "Speed (mph)",
+      torque: "Torque (Nm)"
+    };
+
+    let simulationRunning = false;
+    let pollTimer = null;
+
+    function fmtNum(v, digits) {
+      if (v === null || v === undefined || Number.isNaN(Number(v))) return "--";
+      return Number(v).toFixed(digits);
+    }
+
+    function fmtAge(ms) {
+      if (!ms) return "--";
+      const sec = Math.max(0, Math.floor((Date.now() - Number(ms)) / 1000));
+      if (sec < 60) return `${sec}s`;
+      if (sec < 3600) return `${Math.floor(sec / 60)}m ${sec % 60}s`;
+      const h = Math.floor(sec / 3600);
+      const m = Math.floor((sec % 3600) / 60);
+      return `${h}h ${m}m`;
+    }
+
+    function fmtTime(ms, fallbackIso) {
+      if (ms) {
+        const d = new Date(Number(ms));
+        if (!Number.isNaN(d.getTime())) return d.toLocaleString();
+      }
+      if (fallbackIso) return fallbackIso;
+      return "--";
+    }
+
+    function inputToMs(input) {
+      if (!input) return null;
+      const parsed = Date.parse(input);
+      return Number.isNaN(parsed) ? null : parsed;
+    }
+
+    function setError(message) {
+      if (!message) {
+        logsError.hidden = true;
+        logsError.textContent = "";
+        return;
+      }
+      logsError.hidden = false;
+      logsError.textContent = message;
+    }
+
+    function renderRawTable(rows) {
+      logsHead.innerHTML = `
+        <tr>
+          <th>Received</th>
+          <th>Age</th>
+          <th>Source</th>
+          <th>Lap</th>
+          <th>V</th>
+          <th>A</th>
+          <th>Ah</th>
+          <th>mph</th>
+          <th>Torque</th>
+          <th>lat</th>
+          <th>lon</th>
+        </tr>
+      `;
+      logsBody.innerHTML = "";
+      rows.forEach((r) => {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>${fmtTime(r.received_at_ms, r.received_at_iso_utc)}</td>
+          <td>${fmtAge(r.received_at_ms)}</td>
+          <td>${r.source ?? "--"}</td>
+          <td>${r.lap ?? "--"}</td>
+          <td>${fmtNum(r.V, 2)}</td>
+          <td>${fmtNum(r.A, 2)}</td>
+          <td>${fmtNum(r.Ah, 3)}</td>
+          <td>${fmtNum(r.mph, 2)}</td>
+          <td>${fmtNum(r.torque, 2)}</td>
+          <td>${fmtNum(r.lat, 6)}</td>
+          <td>${fmtNum(r.lon, 6)}</td>
+        `;
+        logsBody.appendChild(tr);
+      });
+      rowsLoaded.textContent = String(rows.length);
+    }
+
+    function renderGroupedTable(rows, mode, metric) {
+      const metricLabel = metricLabels[metric] || metric;
+      const groupTitle = mode === "day" ? "Day" : "Lap";
+      logsHead.innerHTML = `
+        <tr>
+          <th>${groupTitle}</th>
+          <th>Samples</th>
+          <th>First Seen</th>
+          <th>Last Seen</th>
+          <th>Min ${metricLabel}</th>
+          <th>Avg ${metricLabel}</th>
+          <th>Max ${metricLabel}</th>
+        </tr>
+      `;
+      logsBody.innerHTML = "";
+      rows.forEach((r) => {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>${r.group_key ?? "--"}</td>
+          <td>${r.samples ?? 0}</td>
+          <td>${fmtTime(r.first_received_at_ms, r.first_received_at_iso_utc)}</td>
+          <td>${fmtTime(r.last_received_at_ms, r.last_received_at_iso_utc)}</td>
+          <td>${fmtNum(r.min_metric, 3)}</td>
+          <td>${fmtNum(r.avg_metric, 3)}</td>
+          <td>${fmtNum(r.max_metric, 3)}</td>
+        `;
+        logsBody.appendChild(tr);
+      });
+      rowsLoaded.textContent = String(rows.length);
+    }
+
+    function buildQueryParams() {
+      const params = new URLSearchParams();
+      params.set("limit", String(Number(limitSel.value || 300)));
+      params.set("group_by", viewModeSel.value || "none");
+      params.set("metric", metricSel.value || "V");
+
+      const lapsText = lapFilter.value.trim();
+      if (lapsText) params.set("laps", lapsText);
+
+      const fromMs = inputToMs(fromTime.value);
+      const toMs = inputToMs(toTime.value);
+      if (fromMs !== null) params.set("from_ms", String(fromMs));
+      if (toMs !== null) params.set("to_ms", String(toMs));
+
+      if (minVal.value.trim() !== "") params.set("min_value", minVal.value.trim());
+      if (maxVal.value.trim() !== "") params.set("max_value", maxVal.value.trim());
+      return params;
+    }
+
+    async function loadLogs() {
+      try {
+        setError("");
+        const params = buildQueryParams();
+        const res = await fetch(`/api/logs/query?${params.toString()}`);
+        const body = await res.json();
+        if (!res.ok) {
+          throw new Error(body && body.detail ? body.detail : `HTTP ${res.status}`);
+        }
+        if ((body.mode || "none") === "none") {
+          renderRawTable(body.rows || []);
+        } else {
+          renderGroupedTable(body.rows || [], body.mode, body.metric);
+        }
+        lastRefresh.textContent = new Date().toLocaleTimeString();
+      } catch (err) {
+        setError(`Failed to load logs: ${err.message || err}`);
+      }
+    }
+
+    async function loadFacets() {
+      try {
+        const res = await fetch("/api/logs/facets");
+        const body = await res.json();
+        const days = body.days || [];
+        const laps = body.laps || [];
+        daysCount.textContent = String(days.length);
+        lapsCount.textContent = String(laps.length);
+
+        lapHints.innerHTML = "";
+        laps.slice(0, 30).forEach((entry) => {
+          const option = document.createElement("option");
+          option.value = String(entry.lap);
+          lapHints.appendChild(option);
+        });
+      } catch (err) {
+        setError(`Failed to load facets: ${err.message || err}`);
+      }
+    }
+
+    function resetPolling() {
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
+      const interval = Number(refreshSel.value || 0);
+      if (interval > 0) {
+        pollTimer = setInterval(loadLogs, interval);
+      }
+    }
+
+    function clearFilters() {
+      viewModeSel.value = "none";
+      limitSel.value = "300";
+      metricSel.value = "V";
+      minVal.value = "";
+      maxVal.value = "";
+      lapFilter.value = "";
+      fromTime.value = "";
+      toTime.value = "";
+    }
+
+    async function updateSimulationStatus() {
+      const res = await fetch("/api/simulation/status");
+      const j = await res.json();
+      simulationRunning = j.running;
+      simBtn.textContent = simulationRunning ? "Stop Simulation" : "Start Simulation";
+      simBtn.classList.toggle("active", simulationRunning);
+    }
+
+    simBtn.onclick = async () => {
+      if (simulationRunning) {
+        await fetch("/api/simulation/stop", { method: "POST" });
+      } else {
+        await fetch("/api/simulation/start", { method: "POST" });
+      }
+      await updateSimulationStatus();
+      await loadLogs();
+      await loadFacets();
+    };
+
+    simClearBtn.onclick = async () => {
+      const ok = confirm("Clear all simulator-generated data?");
+      if (!ok) return;
+      try {
+        await fetch("/api/simulation/clear", { method: "POST" });
+        await updateSimulationStatus();
+        await loadFacets();
+        await loadLogs();
+      } catch (e) {
+        setError(`Error clearing simulation data: ${e.message || e}`);
+      }
+    };
+
+    navToggle.addEventListener("click", (event) => {
+      event.stopPropagation();
+      navMenu.classList.toggle("open");
+    });
+
+    document.addEventListener("click", (event) => {
+      if (!navMenu.classList.contains("open")) return;
+      if (navMenu.contains(event.target) || navToggle.contains(event.target)) return;
+      navMenu.classList.remove("open");
+    });
+
+    applyBtn.addEventListener("click", loadLogs);
+    clearBtn.addEventListener("click", async () => {
+      clearFilters();
+      await loadLogs();
+    });
+    refreshBtn.addEventListener("click", loadLogs);
+    viewModeSel.addEventListener("change", loadLogs);
+    limitSel.addEventListener("change", loadLogs);
+    refreshSel.addEventListener("change", resetPolling);
+
+    (async () => {
+      await updateSimulationStatus();
+      await loadFacets();
+      await loadLogs();
+      resetPolling();
+    })();
+    setInterval(() => {
+      updateSimulationStatus().catch(() => {});
+    }, 1000);
+  </script>
+</body>
+</html>

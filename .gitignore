@@ -1,0 +1,32 @@
+# Python caches/artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+
+# Virtual environments
+.venv/
+.venv*/
+venv/
+
+# Local runtime/generated telemetry data
+.runtime/
+logs/
+telemetry.db
+*.db-shm
+*.db-wal
+*.log
+
+# Environment secrets
+.env
+.env.*
+
+# IDE/OS noise
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local downloaded binaries
+tools/cloudflared.exe
