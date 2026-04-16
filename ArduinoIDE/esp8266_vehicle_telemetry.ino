@@ -9,7 +9,7 @@
 #include <Adafruit_SSD1306.h>
 
 // -------- OLED --------
-#define OLED_SDA D3
+#define OLED_SDA D2
 #define OLED_SCL D1
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
@@ -20,9 +20,15 @@ bool oledReady = false;
 // -------- Telemetry input (Cycle Analyst) --------
 // CA TX is 0-5V TTL. Level-shift CA TX down to 3.3V before ESP RX.
 // CA stream: 9600 baud, tab-delimited, header + data rows.
-#define CA_RX_PIN D6
 #define CA_BAUD 9600
+#define CA_RX_PIN D7
 SoftwareSerial caSerial(CA_RX_PIN, -1);  // RX only
+
+// -------- GPS input (GT-U7) --------
+// GPS TX -> ESP D5. RX is optional unless you want to configure the module.
+#define GPS_RX_PIN D5
+#define GPS_BAUD 9600
+SoftwareSerial gpsSerial(GPS_RX_PIN, -1);  // RX only
 
 const int CA_MAX_FIELDS = 24;
 String caFields[CA_MAX_FIELDS];
@@ -32,6 +38,7 @@ int caIdxV = -1;
 int caIdxA = -1;
 int caIdxS = -1;
 int caIdxNm = -1;
+unsigned long caLastRowMs = 0;
 
 struct TelemetryData {
   float volts;
@@ -45,6 +52,18 @@ struct TelemetryData {
 };
 
 TelemetryData data = {0, 0, 0, 0, 0, 0, 0, 0};
+
+struct GpsData {
+  float lat;
+  float lon;
+  float speedMph;
+  float altitudeM;
+  uint32_t lastUpdateMs;
+  uint32_t fixCount;
+  bool hasFix;
+};
+
+GpsData gps = {0, 0, 0, 0, 0, 0, false};
 
 struct TelemetrySample {
   uint32_t tMs;
@@ -142,7 +161,7 @@ void captureLatestSample(TelemetrySample& s) {
   s.tMs = data.lastUpdateMs == 0 ? millis() : data.lastUpdateMs;
   s.volts = data.volts;
   s.amps = data.amps;
-  s.mph = data.mph;
+  s.mph = gps.speedMph > 0.01f ? gps.speedMph : data.mph;
   s.torque = data.torque;
   s.ampHours = data.ampHours;
 }
@@ -173,7 +192,7 @@ String metricLine() {
     case 1:
       return "A=" + String(data.amps, 1) + "A";
     case 2:
-      return "MPH=" + String(data.mph, 1);
+      return gps.hasFix ? ("GPS=" + String(gps.lat, 5)) : ("MPH=" + String(data.mph, 1));
     case 3:
       return "TQ=" + String(data.torque, 1) + "Nm";
     default:
@@ -216,6 +235,17 @@ void renderScreen() {
   display.print(sampleQueueCount);
   display.print(" D:");
   display.print(sampleQueueDropped);
+
+  // Line 4: parser and GPS state
+  display.setCursor(0, 54);
+  display.print("CA:");
+  display.print(caHeaderParsed ? "OK" : "WAIT");
+  display.print(" RX:");
+  display.print(caLastRowMs == 0 ? 0 : ((millis() - caLastRowMs) / 1000));
+  display.print("s P:");
+  display.print(data.rowsParsed);
+  display.print(" G:");
+  display.print(gps.hasFix ? "FIX" : "--");
 
   display.display();
 }
@@ -292,9 +322,13 @@ void handleApiLatest() {
   json += "{";
   json += "\"V\":" + String(data.volts, 2) + ",";
   json += "\"A\":" + String(data.amps, 2) + ",";
-  json += "\"mph\":" + String(data.mph, 2) + ",";
+  json += "\"mph\":" + String(gps.speedMph > 0.01f ? gps.speedMph : data.mph, 2) + ",";
   json += "\"torque\":" + String(data.torque, 2) + ",";
   json += "\"Ah\":" + String(data.ampHours, 3) + ",";
+  json += "\"gpsFix\":" + String(gps.hasFix ? "true" : "false") + ",";
+  json += "\"gpsLat\":" + String(gps.lat, 6) + ",";
+  json += "\"gpsLon\":" + String(gps.lon, 6) + ",";
+  json += "\"gpsAlt\":" + String(gps.altitudeM, 1) + ",";
   json += "\"ssid\":\"" + String(hotspots[hotspotIndex].ssid) + "\",";
   json += "\"wifi\":\"" + wifiStateText() + "\",";
   json += "\"queue\":" + String(sampleQueueCount) + ",";
@@ -405,6 +439,7 @@ int splitTabs(const String& line, String* out, int maxFields) {
 
 void parseCaHeader(const String& line) {
   int count = splitTabs(line, caFields, CA_MAX_FIELDS);
+  caLastRowMs = millis();
   caIdxAh = -1;
   caIdxV = -1;
   caIdxA = -1;
@@ -435,11 +470,13 @@ void parseCaHeader(const String& line) {
     Serial.print("/");
     Serial.println(caIdxNm);
   }
+  Serial.println("CA header mapped");
 }
 
 void parseCaDataRow(const String& line) {
   int count = splitTabs(line, caFields, CA_MAX_FIELDS);
   if (count <= 0) return;
+  caLastRowMs = millis();
 
   // Header may repeat in-stream; refresh mapping when it appears.
   if (caFields[0].equalsIgnoreCase("Ah")) {
@@ -472,6 +509,15 @@ void parseCaDataRow(const String& line) {
   data.lastUpdateMs = millis();
   data.rowsParsed++;
   queueCurrentSampleIfOffline();
+
+  Serial.printf("CA #%lu V=%.2f A=%.2f MPH=%.2f TQ=%.2f Ah=%.4f RX=%lus\n",
+                (unsigned long)data.rowsParsed,
+                data.volts,
+                data.amps,
+                data.mph,
+                data.torque,
+                data.ampHours,
+                (unsigned long)((millis() - caLastRowMs) / 1000));
 }
 
 void processTelemetryLine(const String& line) {
@@ -508,8 +554,74 @@ void processTelemetryLine(const String& line) {
   }
 }
 
+static double nmeaCoordToDecimal(const String& raw, const String& hemi) {
+  if (raw.length() < 4) return 0.0;
+  int dot = raw.indexOf('.');
+  int degDigits = (dot > 0 && dot > 4) ? dot - 2 : 2;
+  double deg = raw.substring(0, degDigits).toDouble();
+  double minutes = raw.substring(degDigits).toDouble();
+  double decimal = deg + (minutes / 60.0);
+  if (hemi == "S" || hemi == "W") decimal = -decimal;
+  return decimal;
+}
+
+void processGpsSentence(const String& line) {
+  String row = line;
+  row.trim();
+  if (!row.startsWith("$")) return;
+
+  int star = row.indexOf('*');
+  if (star > 0) {
+    row = row.substring(0, star);
+  }
+
+  String parts[20];
+  int count = splitTabs(row, parts, 20);
+  if (count <= 1) {
+    // Re-tokenize on commas for NMEA.
+    count = 0;
+    int start = 0;
+    while (count < 20) {
+      int idx = row.indexOf(',', start);
+      if (idx == -1) {
+        parts[count++] = row.substring(start);
+        break;
+      }
+      parts[count++] = row.substring(start, idx);
+      start = idx + 1;
+    }
+  }
+
+  if (count < 2) return;
+
+  if (parts[0].endsWith("RMC")) {
+    if (count > 9 && parts[2] == "A") {
+      gps.lat = (float)nmeaCoordToDecimal(parts[3], parts[4]);
+      gps.lon = (float)nmeaCoordToDecimal(parts[5], parts[6]);
+      gps.speedMph = parts[7].toFloat() * 1.15078f;
+      gps.hasFix = true;
+      gps.lastUpdateMs = millis();
+      gps.fixCount++;
+      Serial.printf("GPS fix lat=%.6f lon=%.6f mph=%.2f alt=%.1f\n",
+                    gps.lat, gps.lon, gps.speedMph, gps.altitudeM);
+    }
+  } else if (parts[0].endsWith("GGA")) {
+    if (count > 9 && parts[6].toInt() > 0) {
+      gps.lat = (float)nmeaCoordToDecimal(parts[2], parts[3]);
+      gps.lon = (float)nmeaCoordToDecimal(parts[4], parts[5]);
+      gps.altitudeM = parts[9].toFloat();
+      gps.hasFix = true;
+      gps.lastUpdateMs = millis();
+      gps.fixCount++;
+      Serial.printf("GPS GGA lat=%.6f lon=%.6f alt=%.1f\n",
+                    gps.lat, gps.lon, gps.altitudeM);
+    }
+  }
+}
+
 void serviceTelemetryInput() {
   static String line;
+  caSerial.listen();
   while (caSerial.available() > 0) {
     char c = (char)caSerial.read();
     if (c == '\n' || c == '\r') {
@@ -523,14 +635,33 @@ void serviceTelemetryInput() {
   }
 }
 
+void serviceGpsInput() {
+  static String line;
+  gpsSerial.listen();
+  while (gpsSerial.available() > 0) {
+    char c = (char)gpsSerial.read();
+    if (c == '\n' || c == '\r') {
+      if (line.length() > 0) {
+        processGpsSentence(line);
+        line = "";
+      }
+    } else if (c >= 0x20 || c == '\t') {
+      if (line.length() < 180) line += c;
+    }
+  }
+}
+
 void setup() {
   Serial.begin(115200);
   delay(180);
   Serial.println("EV telemetry boot");
-  Serial.print("CA RX pin (3.3V only): ");
-  Serial.println(CA_RX_PIN);
+  Serial.println("CA on D7 via SoftwareSerial (3.3V only)");
+  Serial.print("GPS RX pin: ");
+  Serial.println(GPS_RX_PIN);
   Serial.print("CA baud: ");
   Serial.println(CA_BAUD);
+  Serial.print("GPS baud: ");
+  Serial.println(GPS_BAUD);
   Serial.print("Offline queue cap: ");
   Serial.println(SAMPLE_QUEUE_CAP);
   Serial.print("Primary hotspot: ");
@@ -547,6 +678,7 @@ void setup() {
 
   Wire.begin(OLED_SDA, OLED_SCL);
   caSerial.begin(CA_BAUD);
+  gpsSerial.begin(GPS_BAUD);
   oledReady = display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR);
   if (oledReady) {
     drawHeader("EV Node Boot");
@@ -567,6 +699,7 @@ void setup() {
 void loop() {
   serviceWifi();
   serviceTelemetryInput();
+  serviceGpsInput();
   maybePostUpstream();
   web.handleClient();
 

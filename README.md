@@ -12,6 +12,7 @@ Early development project for vehicle telemetry collection and live viewing.
 ### Back End
 - Main API/app: `backend/app.py` (FastAPI + WebSocket)
 - Handles ingest, simulation, persistence, and query endpoints
+- Supports a vehicle-Pi mode that can read CA + GPS directly from USB serial and feed the same API/UI
 - See: `backend/README.md`
 
 ### ESP Script
@@ -41,6 +42,19 @@ py -3.12 -m venv .venv312
 .\.venv312\Scripts\python.exe -m pip install -r requirements.txt
 .\.venv312\Scripts\python.exe -m uvicorn backend.app:app --host 0.0.0.0 --port 8000
 ```
+
+## Vehicle Pi Mode
+
+Set these on the Pi when the CA and GPS are plugged into USB:
+
+- `ENABLE_SERIAL_READER=1`
+- `TELEM_SERIAL_MODE=vehicle`
+- `vehicle_wifi_failover.sh` can be used to hop between the two driver hotspots automatically
+- Optional overrides if auto-detect picks the wrong device:
+  - `TELEM_CA_PORT`
+  - `TELEM_GPS_PORT`
+  - `TELEM_CA_BAUD` (default `9600`)
+  - `TELEM_GPS_BAUD` (default `9600`)
 
 ## Manual Funnel
 

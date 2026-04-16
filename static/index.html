@@ -53,6 +53,14 @@
       <div class="gauge-unit">mph</div>
     </div>
     <div class="gauge-card">
+      <div class="gauge-label">GPS</div>
+      <div class="gauge-value" style="font-size: 1.05rem; line-height: 1.35;">
+        <div>Lat <span id="lat">--</span></div>
+        <div>Lon <span id="lon">--</span></div>
+      </div>
+      <div class="gauge-unit"><span id="gpsFix">--</span></div>
+    </div>
+    <div class="gauge-card">
       <div class="gauge-label">Torque</div>
       <div class="gauge-value"><span id="torque">--</span></div>
       <div class="gauge-unit">Nm</div>
@@ -60,6 +68,11 @@
   </div>
 
     <div style="color:var(--neutral); margin-bottom:24px;">Last update: <span id="ts">never</span></div>
+    <div style="color:var(--neutral); margin-bottom:24px;">
+      Source: <span id="sampleSource">--</span> |
+      CA age: <span id="caAge">--</span> |
+      GPS age: <span id="gpsAge">--</span>
+    </div>
 
     <div class="charts">
     <div class="chart-container">
@@ -255,7 +268,14 @@
       set("A", s.A, 1);
       set("Ah", s.Ah, 2);
       set("mph", s.mph, 1);
+      set("lat", s.lat, 6);
+      set("lon", s.lon, 6);
+      document.getElementById("gpsFix").textContent =
+        (s.lat === null || s.lat === undefined || s.lon === null || s.lon === undefined) ? "NO FIX" : "LOCK";
       set("torque", s.torque, 1);
+      document.getElementById("sampleSource").textContent = s.source || "--";
+      document.getElementById("caAge").textContent = s.ca_age_ms === null || s.ca_age_ms === undefined ? "--" : `${Number(s.ca_age_ms).toFixed(0)} ms`;
+      document.getElementById("gpsAge").textContent = s.gps_age_ms === null || s.gps_age_ms === undefined ? "--" : `${Number(s.gps_age_ms).toFixed(0)} ms`;
       document.getElementById("ts").textContent = new Date().toLocaleTimeString();
 
       // Update data buffers
@@ -331,6 +351,12 @@
         document.getElementById("A").textContent = "--";
         document.getElementById("Ah").textContent = "--";
         document.getElementById("mph").textContent = "--";
+        document.getElementById("lat").textContent = "--";
+        document.getElementById("lon").textContent = "--";
+        document.getElementById("gpsFix").textContent = "--";
+        document.getElementById("sampleSource").textContent = "--";
+        document.getElementById("caAge").textContent = "--";
+        document.getElementById("gpsAge").textContent = "--";
         document.getElementById("torque").textContent = "--";
         document.getElementById("ts").textContent = "never";
         updateCharts();

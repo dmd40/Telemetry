@@ -5,14 +5,17 @@ import os
 import sqlite3
 import threading
 import time
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Dict, Any, List, Tuple
 
 try:
     import serial
+    from serial.tools import list_ports
 except ImportError:
     serial = None
+    list_ports = None
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -32,6 +35,12 @@ DB_PATH = os.environ.get("TELEM_DB_PATH", str(PROJECT_ROOT / "telemetry.db"))
 SERIAL_PORT = os.environ.get("TELEM_PORT", "COM5")   # ONLY OPERABLE IN WINDOWS , SET COM TO YOUR SERIAL PORT, OR USB !!!!
 SERIAL_BAUD = int(os.environ.get("TELEM_BAUD", "115200"))
 ENABLE_SERIAL_READER = os.environ.get("ENABLE_SERIAL_READER", "0").strip().lower() not in {"0", "false", "no"}
+SERIAL_MODE = os.environ.get("TELEM_SERIAL_MODE", "json").strip().lower()
+CA_SERIAL_PORT = os.environ.get("TELEM_CA_PORT", "").strip()
+GPS_SERIAL_PORT = os.environ.get("TELEM_GPS_PORT", "").strip()
+CA_SERIAL_BAUD = int(os.environ.get("TELEM_CA_BAUD", "9600"))
+GPS_SERIAL_BAUD = int(os.environ.get("TELEM_GPS_BAUD", "9600"))
+SERIAL_RETRY_SEC = float(os.environ.get("TELEM_SERIAL_RETRY_SEC", "2.0"))
 INGEST_TOKEN = os.environ.get("INGEST_TOKEN", "")
 CORS_ALLOW_ORIGINS = os.environ.get("CORS_ALLOW_ORIGINS", "*")
 RETENTION_DAYS = int(os.environ.get("RETENTION_DAYS", "14"))
@@ -83,6 +92,48 @@ last_prune_report: Dict[str, Any] = {
 # Simulation mode
 simulation_mode = False
 simulation_task = None
+
+
+@dataclass
+class CaReaderState:
+    header_parsed: bool = False
+    fields: List[str] = field(default_factory=list)
+    idx_ah: int = -1
+    idx_v: int = -1
+    idx_a: int = -1
+    idx_s: int = -1
+    idx_nm: int = -1
+    volts: float = 0.0
+    amps: float = 0.0
+    mph: float = 0.0
+    torque: float = 0.0
+    amp_hours: float = 0.0
+    last_row_ms: int = 0
+    rows_parsed: int = 0
+    rows_rejected: int = 0
+
+
+@dataclass
+class GpsReaderState:
+    lat: float = 0.0
+    lon: float = 0.0
+    speed_mph: float = 0.0
+    altitude_m: float = 0.0
+    last_fix_ms: int = 0
+    fix_count: int = 0
+    has_fix: bool = False
+
+
+serial_mode_lock = threading.Lock()
+serial_state_lock = threading.Lock()
+serial_stop_event = threading.Event()
+serial_event_loop: Optional[asyncio.AbstractEventLoop] = None
+serial_thread_handles: List[threading.Thread] = []
+serial_threads_started = False
+ca_reader = CaReaderState()
+gps_reader = GpsReaderState()
+vehicle_ca_port: Optional[str] = None
+vehicle_gps_port: Optional[str] = None
 
 # -----------------------------
 # Database helpers
@@ -590,6 +641,339 @@ def get_logs_facets() -> Dict[str, Any]:
     conn.close()
     return {"laps": lap_rows, "days": day_rows}
 
+
+# -----------------------------
+# Vehicle Pi serial collection
+# -----------------------------
+def _serial_port_text(port_info: Any) -> str:
+    parts = [
+        getattr(port_info, "device", "") or "",
+        getattr(port_info, "description", "") or "",
+        getattr(port_info, "manufacturer", "") or "",
+        getattr(port_info, "product", "") or "",
+        getattr(port_info, "hwid", "") or "",
+    ]
+    return " ".join(parts).lower()
+
+
+def _available_serial_ports() -> List[Any]:
+    if list_ports is None:
+        return []
+    try:
+        return list(list_ports.comports())
+    except Exception:
+        return []
+
+
+def _detect_serial_port(kind: str, exclude: Optional[str] = None) -> Optional[str]:
+    if kind == "ca" and CA_SERIAL_PORT:
+        return CA_SERIAL_PORT
+    if kind == "gps" and GPS_SERIAL_PORT:
+        return GPS_SERIAL_PORT
+
+    ports = _available_serial_ports()
+    if exclude:
+        ports = [p for p in ports if getattr(p, "device", "") != exclude]
+    if not ports:
+        return None
+
+    preferred_keywords = {
+        "ca": ["ftdi", "usb serial port", "cp210", "ch340", "silicon labs", "uart", "serial"],
+        "gps": ["gps", "u-blox", "ublox", "gt-u7", "neo-6", "neo6", "serial"],
+    }
+
+    for port in ports:
+        text = _serial_port_text(port)
+        if any(keyword in text for keyword in preferred_keywords.get(kind, [])):
+            return getattr(port, "device", None)
+
+    return getattr(ports[0], "device", None)
+
+
+def _split_fields(line: str, delimiter: str) -> List[str]:
+    return [part.strip() for part in line.split(delimiter)]
+
+
+def _nmea_coord_to_decimal(raw: str, hemi: str) -> Optional[float]:
+    raw = (raw or "").strip()
+    hemi = (hemi or "").strip().upper()
+    if len(raw) < 4:
+        return None
+    try:
+        if hemi in {"N", "S"}:
+            deg_len = 2
+        else:
+            deg_len = 3
+        deg = float(raw[:deg_len])
+        minutes = float(raw[deg_len:])
+        val = deg + minutes / 60.0
+        if hemi in {"S", "W"}:
+            val = -val
+        return val
+    except Exception:
+        return None
+
+
+def _build_vehicle_sample(source: str) -> Dict[str, Any]:
+    now_ms = int(time.time() * 1000)
+    with serial_state_lock:
+        mph = gps_reader.speed_mph if gps_reader.has_fix and gps_reader.speed_mph > 0.0 else ca_reader.mph
+        lat = gps_reader.lat if gps_reader.has_fix else None
+        lon = gps_reader.lon if gps_reader.has_fix else None
+        t_ms = max(now_ms, ca_reader.last_row_ms or 0, gps_reader.last_fix_ms or 0)
+        ca_age_ms = now_ms - ca_reader.last_row_ms if ca_reader.last_row_ms else None
+        gps_age_ms = now_ms - gps_reader.last_fix_ms if gps_reader.last_fix_ms else None
+        return {
+            "t": t_ms,
+            "lap": 0,
+            "V": round(ca_reader.volts, 3),
+            "A": round(ca_reader.amps, 3),
+            "Ah": round(ca_reader.amp_hours, 4),
+            "mph": round(mph, 3) if mph is not None else None,
+            "torque": round(ca_reader.torque, 3),
+            "lat": round(lat, 7) if lat is not None else None,
+            "lon": round(lon, 7) if lon is not None else None,
+            "ca_age_ms": ca_age_ms,
+            "gps_age_ms": gps_age_ms,
+            "sample_age_ms": now_ms - max(ca_reader.last_row_ms or now_ms, gps_reader.last_fix_ms or now_ms),
+            "source": source,
+        }
+
+
+def _maybe_queue_vehicle_sample(source: str):
+    if serial_event_loop is None or simulation_mode:
+        return
+    sample = _build_vehicle_sample(source)
+    asyncio.run_coroutine_threadsafe(ingest_payload(sample), serial_event_loop)
+
+
+def _process_ca_line(line: str) -> None:
+    row = line.strip()
+    if not row:
+        return
+
+    parts = _split_fields(row, "\t")
+    if len(parts) <= 0:
+        return
+
+    with serial_state_lock:
+        if parts[0].lower() == "ah" and ("v" in {p.lower() for p in parts}):
+            ca_reader.fields = parts
+            ca_reader.idx_ah = ca_reader.idx_v = ca_reader.idx_a = ca_reader.idx_s = ca_reader.idx_nm = -1
+            for idx, col in enumerate(parts):
+                key = col.strip().lower()
+                if key == "ah":
+                    ca_reader.idx_ah = idx
+                elif key == "v":
+                    ca_reader.idx_v = idx
+                elif key == "a":
+                    ca_reader.idx_a = idx
+                elif key == "s":
+                    ca_reader.idx_s = idx
+                elif key == "nm":
+                    ca_reader.idx_nm = idx
+            ca_reader.header_parsed = ca_reader.idx_v >= 0 or ca_reader.idx_a >= 0 or ca_reader.idx_ah >= 0
+            ca_reader.last_row_ms = int(time.time() * 1000)
+            print(f"[telemetry] CA header parsed={ca_reader.header_parsed} idx=Ah/V/A/S/Nm {ca_reader.idx_ah}/{ca_reader.idx_v}/{ca_reader.idx_a}/{ca_reader.idx_s}/{ca_reader.idx_nm}")
+            return
+
+        if not ca_reader.header_parsed:
+            return
+
+        max_needed = max(ca_reader.idx_ah, ca_reader.idx_v, ca_reader.idx_a, ca_reader.idx_s, ca_reader.idx_nm)
+        if max_needed >= len(parts):
+            ca_reader.rows_rejected += 1
+            return
+
+        try:
+            if ca_reader.idx_v >= 0:
+                ca_reader.volts = float(parts[ca_reader.idx_v] or 0.0)
+            if ca_reader.idx_a >= 0:
+                ca_reader.amps = float(parts[ca_reader.idx_a] or 0.0)
+            if ca_reader.idx_s >= 0:
+                ca_reader.mph = float(parts[ca_reader.idx_s] or 0.0)
+            if ca_reader.idx_ah >= 0:
+                ca_reader.amp_hours = float(parts[ca_reader.idx_ah] or 0.0)
+            if ca_reader.idx_nm >= 0:
+                ca_reader.torque = float(parts[ca_reader.idx_nm] or 0.0)
+            else:
+                ca_reader.torque = ca_reader.amps * 0.54
+        except Exception:
+            ca_reader.rows_rejected += 1
+            return
+
+        ca_reader.last_row_ms = int(time.time() * 1000)
+        ca_reader.rows_parsed += 1
+        print(
+            f"[telemetry] CA #{ca_reader.rows_parsed} V={ca_reader.volts:.2f} "
+            f"A={ca_reader.amps:.2f} mph={ca_reader.mph:.2f} TQ={ca_reader.torque:.2f} "
+            f"Ah={ca_reader.amp_hours:.4f}"
+        )
+
+    _maybe_queue_vehicle_sample("vehicle-pi-ca")
+
+
+def _process_gps_line(line: str) -> None:
+    row = line.strip()
+    if not row.startswith("$"):
+        return
+
+    parts = row.split(",")
+    if not parts:
+        return
+
+    updated = False
+    with serial_state_lock:
+        sentence = parts[0]
+        if sentence.endswith("RMC") and len(parts) > 7 and parts[2] == "A":
+            lat = _nmea_coord_to_decimal(parts[3] if len(parts) > 3 else "", parts[4] if len(parts) > 4 else "")
+            lon = _nmea_coord_to_decimal(parts[5] if len(parts) > 5 else "", parts[6] if len(parts) > 6 else "")
+            if lat is not None and lon is not None:
+                gps_reader.lat = lat
+                gps_reader.lon = lon
+                try:
+                    gps_reader.speed_mph = float(parts[7] or 0.0) * 1.15078
+                except Exception:
+                    gps_reader.speed_mph = 0.0
+                gps_reader.has_fix = True
+                gps_reader.last_fix_ms = int(time.time() * 1000)
+                gps_reader.fix_count += 1
+                updated = True
+                print(
+                    f"[telemetry] GPS RMC lat={gps_reader.lat:.6f} lon={gps_reader.lon:.6f} "
+                    f"mph={gps_reader.speed_mph:.2f}"
+                )
+        elif sentence.endswith("GGA") and len(parts) > 9:
+            try:
+                fix_quality = int(parts[6] or 0)
+            except Exception:
+                fix_quality = 0
+            if fix_quality > 0:
+                lat = _nmea_coord_to_decimal(parts[2], parts[3])
+                lon = _nmea_coord_to_decimal(parts[4], parts[5])
+                if lat is not None and lon is not None:
+                    gps_reader.lat = lat
+                    gps_reader.lon = lon
+                    try:
+                        gps_reader.altitude_m = float(parts[9] or 0.0)
+                    except Exception:
+                        gps_reader.altitude_m = 0.0
+                    gps_reader.has_fix = True
+                    gps_reader.last_fix_ms = int(time.time() * 1000)
+                    gps_reader.fix_count += 1
+                    updated = True
+                    print(
+                        f"[telemetry] GPS GGA lat={gps_reader.lat:.6f} lon={gps_reader.lon:.6f} "
+                        f"alt={gps_reader.altitude_m:.1f}"
+                    )
+
+    if updated:
+        _maybe_queue_vehicle_sample("vehicle-pi-gps")
+
+
+def _vehicle_serial_worker(kind: str, port_hint: Optional[str], baud: int, exclude_device: Optional[str] = None):
+    global vehicle_ca_port, vehicle_gps_port
+    current_port = port_hint
+    while not serial_stop_event.is_set():
+        if simulation_mode:
+            time.sleep(0.2)
+            continue
+
+        if not current_port:
+            active_exclude = exclude_device
+            if kind == "ca" and vehicle_gps_port:
+                active_exclude = vehicle_gps_port
+            elif kind == "gps" and vehicle_ca_port:
+                active_exclude = vehicle_ca_port
+            current_port = _detect_serial_port(kind, exclude=active_exclude)
+            if not current_port:
+                print(f"[telemetry] {kind} reader waiting for USB serial device...")
+                time.sleep(SERIAL_RETRY_SEC)
+                continue
+
+        try:
+            with serial.Serial(
+                current_port,
+                baud,
+                timeout=1,
+                rtscts=False,
+                dsrdtr=False,
+                xonxoff=False,
+                exclusive=True,
+            ) as ser:
+                ser.dtr = False
+                ser.rts = False
+                ser.reset_input_buffer()
+                print(f"[telemetry] {kind} reader connected: {current_port} @ {baud}")
+                if kind == "ca":
+                    vehicle_ca_port = current_port
+                else:
+                    vehicle_gps_port = current_port
+                while not serial_stop_event.is_set() and not simulation_mode:
+                    try:
+                        line = ser.readline().decode(errors="ignore").strip()
+                    except Exception:
+                        break
+                    if not line:
+                        continue
+                    if kind == "ca":
+                        _process_ca_line(line)
+                    else:
+                        _process_gps_line(line)
+        except Exception as exc:
+            print(f"[telemetry] {kind} reader error on {current_port}: {exc}")
+            if kind == "ca" and vehicle_ca_port == current_port:
+                vehicle_ca_port = None
+            if kind == "gps" and vehicle_gps_port == current_port:
+                vehicle_gps_port = None
+            current_port = None
+            time.sleep(SERIAL_RETRY_SEC)
+
+
+def start_vehicle_serial_readers():
+    global serial_thread_handles, serial_threads_started, serial_event_loop
+    global vehicle_ca_port, vehicle_gps_port
+    with serial_mode_lock:
+        if serial_threads_started:
+            return
+        serial_threads_started = True
+        serial_stop_event.clear()
+        serial_thread_handles = []
+        serial_event_loop = asyncio.get_running_loop()
+
+        ca_port = _detect_serial_port("ca")
+        gps_port = _detect_serial_port("gps", exclude=ca_port)
+        vehicle_ca_port = ca_port
+        vehicle_gps_port = gps_port
+
+        print(f"[telemetry] vehicle serial mode: ca={ca_port or 'auto'} gps={gps_port or 'auto'}")
+
+        if serial is not None:
+            t = threading.Thread(
+                target=_vehicle_serial_worker,
+                args=("ca", ca_port, CA_SERIAL_BAUD, None),
+                daemon=True,
+            )
+            serial_thread_handles.append(t)
+            t.start()
+
+            t = threading.Thread(
+                target=_vehicle_serial_worker,
+                args=("gps", gps_port, GPS_SERIAL_BAUD, ca_port),
+                daemon=True,
+            )
+            serial_thread_handles.append(t)
+            t.start()
+
+
+def stop_vehicle_serial_readers():
+    global serial_threads_started, serial_thread_handles, vehicle_ca_port, vehicle_gps_port
+    serial_stop_event.set()
+    serial_threads_started = False
+    serial_thread_handles = []
+    vehicle_ca_port = None
+    vehicle_gps_port = None
+
 # -----------------------------
 # Telemetry parsing / enrichment
 # -----------------------------
@@ -670,7 +1054,7 @@ async def broadcast(sample: Dict[str, Any]):
 # -----------------------------
 async def serial_reader():
     global latest_sample
-    while True:
+    while not serial_stop_event.is_set():
         if serial is None:
             await asyncio.sleep(1.0)
             continue
@@ -680,10 +1064,20 @@ async def serial_reader():
             continue
             
         try:
-            ser = serial.Serial(SERIAL_PORT, SERIAL_BAUD, timeout=1)
+            ser = serial.Serial(
+                SERIAL_PORT,
+                SERIAL_BAUD,
+                timeout=1,
+                rtscts=False,
+                dsrdtr=False,
+                xonxoff=False,
+                exclusive=True,
+            )
+            ser.dtr = False
+            ser.rts = False
             ser.reset_input_buffer()    
 
-            while True:
+            while not serial_stop_event.is_set():
                 if simulation_mode:
                     break
                     
@@ -810,18 +1204,32 @@ def get_simulation_status():
 
 @app.on_event("startup")
 async def startup_event():
-    if ENABLE_SERIAL_READER and serial is not None:
-        asyncio.create_task(serial_reader())
+    if serial is not None and (ENABLE_SERIAL_READER or SERIAL_MODE == "vehicle"):
+        if SERIAL_MODE == "vehicle":
+            start_vehicle_serial_readers()
+        else:
+            asyncio.create_task(serial_reader())
     maybe_prune_retention()
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    stop_vehicle_serial_readers()
 
 @app.get("/api/health")
 def api_health():
     return {
         "ok": True,
+        "serial_mode": SERIAL_MODE,
         "serial_reader": ENABLE_SERIAL_READER,
         "serial_module_present": serial is not None,
         "serial_port": SERIAL_PORT,
         "serial_baud": SERIAL_BAUD,
+        "ca_serial_port": CA_SERIAL_PORT or None,
+        "gps_serial_port": GPS_SERIAL_PORT or None,
+        "vehicle_ca_port": vehicle_ca_port,
+        "vehicle_gps_port": vehicle_gps_port,
+        "ca_serial_baud": CA_SERIAL_BAUD,
+        "gps_serial_baud": GPS_SERIAL_BAUD,
         "retention_days": RETENTION_DAYS,
         "log_dir": str(Path(LOG_DIR).resolve()),
         "last_prune": last_prune_report,
